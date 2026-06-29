@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NUBLACK — Prueba Wompi Sandbox</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    .box { background: #f5f5f5; padding: 1rem; border-radius: 8px; margin: 1rem 0; font-size: 0.9rem; word-break: break-all; }
+    label { display: block; margin-top: 0.75rem; font-weight: 600; }
+    input, button { width: 100%; padding: 0.6rem; margin-top: 0.25rem; box-sizing: border-box; }
+    button { background: #000; color: #fff; border: none; cursor: pointer; margin-top: 1rem; }
+    button.secondary { background: #444; }
+    #status { margin-top: 1rem; padding: 0.75rem; border-radius: 6px; }
+    .ok { background: #d4edda; }
+    .warn { background: #fff3cd; }
+    .err { background: #f8d7da; }
+    .actions { display: grid; gap: 0.5rem; margin-top: 1rem; }
+    a.checkout-link { display: block; text-align: center; margin-top: 0.75rem; font-weight: 600; color: #0066cc; }
+  </style>
+</head>
+<body>
+  <h1>Prueba Wompi Sandbox</h1>
+  <p><strong>Usa ventana de incógnito</strong> (Ctrl+Shift+N). Las extensiones causan <code>merchants/undefined</code>.</p>
+
+  <label>Token JWT</label>
+  <input id="token" placeholder="eyJhbG..." />
+
+  <label>Order ID</label>
+  <input id="orderId" placeholder="ORD-..." />
+
+  <div class="actions">
+    <button type="button" id="btnLoad">1. Generar checkout nuevo</button>
+    <button type="button" class="secondary" id="btnPay">2. Ir a pagar en Wompi</button>
+    <button type="button" class="secondary" id="btnStatus">Consultar estado</button>
+  </div>
+
+  <div id="status" class="warn">Ejecuta test_wompi_flow.js y recarga esta página.</div>
+  <div class="box" id="checkoutInfo"></div>
+  <div id="pay-area"></div>
+
+  <script>
+    let lastCheckout = null;
+
+    function setStatus(msg, cls) {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = cls || 'warn';
+    }
+
+    async function fetchCheckout() {
+      const token = document.getElementById('token').value.trim();
+      const orderId = document.getElementById('orderId').value.trim();
+      if (!token || !orderId) throw new Error('Falta token u orderId');
+
+      const res = await fetch('/api/payments/wompi/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ orderId })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || res.status);
+      if (!data.checkout?.publicKey) throw new Error('Backend no devolvió publicKey');
+      if (!data.checkout?.checkoutUrl) throw new Error('Backend no devolvió checkoutUrl');
+      return data;
+    }
+
+    function renderPayLink(c) {
+      lastCheckout = c;
+      document.getElementById('pay-area').innerHTML = `
+        <a class="checkout-link" id="payLink" href="${c.checkoutUrl}" target="_blank" rel="noopener noreferrer">
+          Abrir pago Wompi (URL firmada)
+        </a>
+        <p style="font-size:0.85rem;color:#555;margin-top:0.5rem;">
+          publicKey: ${c.publicKey.slice(0, 16)}... · ref: ${c.reference}
+        </p>`;
+    }
+
+    async function loadCheckout() {
+      setStatus('Generando checkout...', 'warn');
+      const data = await fetchCheckout();
+      document.getElementById('checkoutInfo').textContent = JSON.stringify(data, null, 2);
+      renderPayLink(data.checkout);
+
+      if (data.wompiValidation && !data.wompiValidation.ok) {
+        setStatus(`Firma rechazada por Wompi (HTTP ${data.wompiValidation.checkoutHttpStatus})`, 'err');
+        return null;
+      }
+      setStatus(`OK — Wompi HTTP ${data.wompiValidation?.checkoutHttpStatus || '?'}. Pulsa "2. Ir a pagar".`, 'ok');
+      return data.checkout;
+    }
+
+    async function openPay() {
+      const c = lastCheckout || await loadCheckout();
+      if (!c?.checkoutUrl) return;
+      if (!c.publicKey || c.publicKey === 'undefined') {
+        setStatus('publicKey inválida. Vuelve a cargar checkout.', 'err');
+        return;
+      }
+      window.open(c.checkoutUrl, '_blank', 'noopener,noreferrer');
+      setStatus('Checkout abierto. Paga con 4242 4242 4242 4242', 'ok');
+    }
+
+    async function checkStatus() {
+      const token = document.getElementById('token').value.trim();
+      const orderId = document.getElementById('orderId').value.trim();
+      const res = await fetch(`/api/payments/status/${encodeURIComponent(orderId)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || res.status);
+      setStatus('Estado: ' + data.payment?.estado_pago, data.payment?.estado_pago === 'pagado' ? 'ok' : 'warn');
+      document.getElementById('checkoutInfo').textContent = JSON.stringify(data, null, 2);
+    }
+
+    document.getElementById('btnLoad').onclick = () => loadCheckout().catch(e => setStatus(e.message, 'err'));
+    document.getElementById('btnPay').onclick = () => openPay().catch(e => setStatus(e.message, 'err'));
+    document.getElementById('btnStatus').onclick = () => checkStatus().catch(e => setStatus(e.message, 'err'));
+
+    (async () => {
+      try {
+        const res = await fetch('/test/wompi/session');
+        if (!res.ok) return;
+        const s = await res.json();
+        if (s.token) document.getElementById('token').value = s.token;
+        if (s.orderId) document.getElementById('orderId').value = s.orderId;
+        setStatus('Sesión cargada. Pulsa "1. Generar checkout nuevo".', 'ok');
+      } catch { /* ignore */ }
+    })();
+  </script>
+</body>
+</html>

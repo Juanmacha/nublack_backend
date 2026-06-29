@@ -1,0 +1,19 @@
+{
+  "apiUrl": "http://localhost:3001/api",
+  "orderId": "ORD-1782750200113-548",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MTEsInJvbCI6ImFkbWluaXN0cmFkb3IiLCJpYXQiOjE3ODI3NTAxOTksImV4cCI6MTc4Mjc1Mzc5OX0.8WSQkYxZOnZct3IHZb1BWL8lGOpV8Eegi1MtuSWQjZk",
+  "checkout": {
+    "publicKey": "pub_test_ESRoJcmwMxYnpEzD0z5WBXfIB2DAttT7",
+    "currency": "COP",
+    "amountInCents": 10499000,
+    "reference": "NUBLACK-ORD-1782750200113-548-1782750201148",
+    "integritySignature": "95d78f8a79205f303f7fac22ccb37de7ad015e06f1c89d028b3561a0271ce769",
+    "signature": {
+      "integrity": "95d78f8a79205f303f7fac22ccb37de7ad015e06f1c89d028b3561a0271ce769"
+    },
+    "redirectUrl": "https://transaction-redirect.wompi.co/check",
+    "customerEmail": "admin@demo.local.com",
+    "checkoutUrl": "https://checkout.wompi.co/p/?public-key=pub_test_ESRoJcmwMxYnpEzD0z5WBXfIB2DAttT7&currency=COP&amount-in-cents=10499000&reference=NUBLACK-ORD-1782750200113-548-1782750201148&signature%3Aintegrity=95d78f8a79205f303f7fac22ccb37de7ad015e06f1c89d028b3561a0271ce769&redirect-url=https%3A%2F%2Ftransaction-redirect.wompi.co%2Fcheck"
+  },
+  "createdAt": "2026-06-29T16:23:24.870Z"
+}

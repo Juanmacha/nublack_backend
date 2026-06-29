@@ -1,8 +1,9 @@
 import app from './app.js';
 import { validateEnv } from './config/env.js';
-// Restart trigger
 import sequelize from './config/database.js';
 import ensureDemoAdmin from './utils/createDemoAdmin.js';
+import { startPaymentExpiryJob } from './services/paymentExpiryService.js';
+import { wompiConfig } from './config/wompi.js';
 
 validateEnv();
 
@@ -29,6 +30,12 @@ const startServer = async () => {
 
         app.listen(PORT, () => {
             console.log(`Server running on port ${PORT}`);
+            startPaymentExpiryJob();
+            if (!wompiConfig.isConfigured()) {
+                console.warn('⚠️ Wompi no configurado. Pasarela de pago deshabilitada hasta configurar variables WOMPI_*.');
+            } else {
+                console.log(`✅ Wompi configurado (${wompiConfig.env}). Expiración de pago: ${wompiConfig.paymentExpiryMinutes} min.`);
+            }
         });
     } catch (error) {
         console.error('Unable to connect to the database:', error.message);

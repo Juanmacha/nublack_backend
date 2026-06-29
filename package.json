@@ -6,7 +6,15 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "migrate:wompi": "node scripts/migrate_wompi_shipping.js",
+    "test": "node scripts/pre_deploy_test.js",
+    "test:offline": "node scripts/pre_deploy_test.js --skip-api",
+    "test:api": "node scripts/pre_deploy_test.js --require-api",
+    "test:wompi:flow": "node scripts/tools/test_wompi_flow.js",
+    "diagnose:wompi": "node scripts/tools/diagnose_wompi.js",
+    "diagnose:wompi:tx": "node scripts/tools/diagnose_wompi_transaction.js",
+    "pay:wompi:sandbox": "node scripts/tools/pay_wompi_sandbox.js"
   },
   "keywords": [],
   "author": "",

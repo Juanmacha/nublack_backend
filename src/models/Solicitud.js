@@ -43,14 +43,26 @@ const Solicitud = sequelize.define('Solicitud', {
     horario_preferido: { type: DataTypes.STRING(100) },
     // Preferencias y Pago
     metodo_pago: {
-        type: DataTypes.ENUM('Contra Entrega', 'Tarjeta', 'Transferencia', 'PSE'),
+        type: DataTypes.ENUM('Contra Entrega', 'Pasarela', 'Tarjeta', 'Transferencia', 'PSE'),
         defaultValue: 'Contra Entrega'
     },
+    estado_pago: {
+        type: DataTypes.ENUM('pendiente', 'pagado', 'fallido', 'expirado', 'no_aplica'),
+        defaultValue: 'no_aplica'
+    },
+    wompi_transaction_id: { type: DataTypes.STRING(100) },
+    wompi_reference: { type: DataTypes.STRING(100) },
+    wompi_payment_method_type: { type: DataTypes.STRING(50) },
+    fecha_pago: { type: DataTypes.DATE },
+    pago_expira_at: { type: DataTypes.DATE },
     total: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
     subtotal: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
     envio: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     idempotency_key: { type: DataTypes.STRING(100), unique: true, allowNull: true },
     tiempo_estimado_entrega: { type: DataTypes.STRING(100) },
+    numero_guia: { type: DataTypes.STRING(100) },
+    nombre_empaquetadora: { type: DataTypes.STRING(150) },
+    fecha_despacho: { type: DataTypes.DATE },
     prioridad: {
         type: DataTypes.ENUM('baja', 'normal', 'alta', 'urgente'),
         defaultValue: 'normal'

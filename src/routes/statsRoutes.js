@@ -1,4 +1,5 @@
 import express from 'express';
+import { Op } from 'sequelize';
 import { Usuario, Producto, Categoria, Solicitud, DetalleSolicitud } from '../models/index.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 import isAdmin from '../middleware/isAdmin.js';
@@ -21,7 +22,16 @@ const getStats = async (req, res) => {
             group: ['estado']
         });
 
-        const valorTotal = await Solicitud.sum('total');
+        // Valor confirmado: pasarela pagada o pedido entregado (contra entrega cobrada)
+        const valorTotal = await Solicitud.sum('total', {
+            where: {
+                estado: { [Op.ne]: 'cancelada' },
+                [Op.or]: [
+                    { estado_pago: 'pagado' },
+                    { estado: 'entregada' }
+                ]
+            }
+        });
 
         // Format states count
         const states = {

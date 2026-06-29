@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 // Import Routes
@@ -9,6 +10,7 @@ import authRoutes from './routes/authRoutes.js';
 import productRoutes from './routes/productRoutes.js';
 import categoryRoutes from './routes/categoryRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
+import paymentRoutes from './routes/paymentRoutes.js';
 import cartRoutes from './routes/cartRoutes.js';
 import statsRoutes from './routes/statsRoutes.js';
 import userRoutes from './routes/userRoutes.js';
@@ -53,7 +55,7 @@ app.use(cors({
             'https://www.nublack12.com'
         ],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Event-Checksum']
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -71,10 +73,39 @@ app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/payments', paymentRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/configs', configRoutes);
+
+// Herramientas de prueba Wompi (solo desarrollo)
+if (process.env.NODE_ENV !== 'production') {
+    const wompiTestHtml = path.join(process.cwd(), 'scripts/tools/wompi_test_checkout.html');
+    const wompiSessionFile = path.join(process.cwd(), 'scripts/tools/wompi_test_session.local.json');
+
+    app.get('/test/wompi', (req, res) => {
+        if (!fs.existsSync(wompiTestHtml)) {
+            return res.status(404).send('No se encontró wompi_test_checkout.html');
+        }
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.sendFile(wompiTestHtml);
+    });
+
+    app.get('/test/wompi/session', (req, res) => {
+        if (!fs.existsSync(wompiSessionFile)) {
+            return res.status(404).json({
+                message: 'Ejecuta primero: node scripts/tools/test_wompi_flow.js'
+            });
+        }
+        try {
+            const session = JSON.parse(fs.readFileSync(wompiSessionFile, 'utf8'));
+            res.json(session);
+        } catch {
+            res.status(500).json({ message: 'Error leyendo sesión de prueba' });
+        }
+    });
+}
 
 // 404 Handler
 app.use((req, res, next) => {

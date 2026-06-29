@@ -71,7 +71,7 @@ export const sendNewProductNotification = async (emails, product) => {
 /**
  * Send Order Status Update Email
  */
-export const sendOrderStatusEmail = async (userEmail, orderNumber, status) => {
+export const sendOrderStatusEmail = async (userEmail, orderNumber, status, shippingInfo = {}) => {
     const statusMessages = {
         'aceptada': 'ha sido aceptado y se está preparando.',
         'enviada': '¡Ya va en camino! Tu pedido ha sido despachado.',
@@ -81,6 +81,16 @@ export const sendOrderStatusEmail = async (userEmail, orderNumber, status) => {
 
     const message = statusMessages[status] || `ha cambiado a estado: ${status}`;
 
+    const trackingBlock = status === 'enviada' && shippingInfo.numero_guia
+        ? `
+            <hr>
+            <p><strong>Información de envío:</strong></p>
+            <p>Empaquetadora: ${shippingInfo.nombre_empaquetadora || 'No especificada'}</p>
+            <p>Número de guía: <strong>${shippingInfo.numero_guia}</strong></p>
+            <p>Puedes hacer seguimiento de tu envío con la transportadora indicada.</p>
+        `
+        : '';
+
     const mailOptions = {
         from: process.env.EMAIL_FROM,
         to: userEmail,
@@ -89,7 +99,27 @@ export const sendOrderStatusEmail = async (userEmail, orderNumber, status) => {
             <div style="font-family: Arial, sans-serif; border: 1px solid #eee; padding: 20px;">
                 <h2>Estado de tu pedido</h2>
                 <p>Hola, el estado de tu pedido <strong>${orderNumber}</strong> ${message}</p>
+                ${trackingBlock}
                 <p>Si tienes alguna duda, puedes responder a este correo.</p>
+                <p>Atentamente,<br>Equipo NUBLACK</p>
+            </div>
+        `
+    };
+    return transporter.sendMail(mailOptions);
+};
+
+export const sendPendingPaymentEmail = async (userEmail, order) => {
+    const mailOptions = {
+        from: process.env.EMAIL_FROM,
+        to: userEmail,
+        subject: `Completa el pago de tu pedido ${order.numero_pedido}`,
+        html: `
+            <div style="font-family: Arial, sans-serif; border: 1px solid #eee; padding: 20px;">
+                <h2>Pedido registrado — pendiente de pago</h2>
+                <p>Tu pedido <strong>${order.numero_pedido}</strong> fue creado correctamente.</p>
+                <p>Total a pagar: <strong>$${Number(order.total).toLocaleString()} COP</strong></p>
+                <p>Tienes <strong>40 minutos</strong> para completar el pago por pasarela Wompi.</p>
+                <p>Si no completas el pago a tiempo, el pedido se cancelará automáticamente.</p>
                 <p>Atentamente,<br>Equipo NUBLACK</p>
             </div>
         `
