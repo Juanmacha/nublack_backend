@@ -1,5 +1,5 @@
 import express from 'express';
-import { Solicitud, DetalleSolicitud, Producto, Usuario, Carrito } from '../models/index.js';
+import { Solicitud, DetalleSolicitud, Producto, Usuario } from '../models/index.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 import isAdmin from '../middleware/isAdmin.js';
 import sequelize from '../config/database.js';
@@ -18,8 +18,20 @@ import {
 import { wompiConfig } from '../config/wompi.js';
 import { buildCheckoutConfig, buildWompiReference } from '../services/wompiService.js';
 import { restoreOrderStock } from '../services/orderStockService.js';
+import { clearUserCart } from '../services/cartService.js';
 import { expireUnpaidGatewayOrders } from '../services/paymentExpiryService.js';
 import { syncPendingGatewayPayments } from '../services/paymentSyncService.js';
+
+const resolveProductImage = (producto) => {
+    if (!producto) return '';
+    if (producto.imagen) return producto.imagen;
+    let imgs = producto.imagenes;
+    if (typeof imgs === 'string') {
+        try { imgs = JSON.parse(imgs); } catch { imgs = []; }
+    }
+    if (Array.isArray(imgs) && imgs.length > 0) return imgs[0] || '';
+    return '';
+};
 
 const router = express.Router();
 
@@ -144,13 +156,16 @@ const createOrder = async (req, res) => {
         for (const item of items) {
             const quantity = item?.cantidad || item?.quantity || 1;
             const size = item?.talla || item?.size || null;
+            const prodId = item?.id_producto || item?.id;
+            const producto = await Producto.findByPk(prodId, { transaction: t, lock: Transaction.LOCK.UPDATE });
+            const imagenProducto = resolveProductImage(producto) || item?.imagen || '';
 
             await DetalleSolicitud.create({
                 solicitud_id: solicitud.id_solicitud,
-                producto_id: item?.id_producto || item?.id,
-                nombre_producto: item?.nombre || 'Producto',
-                descripcion_producto: item?.descripcion || '',
-                imagen_producto: item?.imagen || '',
+                producto_id: prodId,
+                nombre_producto: item?.nombre || producto?.nombre || 'Producto',
+                descripcion_producto: item?.descripcion || producto?.descripcion || '',
+                imagen_producto: imagenProducto,
                 cantidad: quantity,
                 talla: size || 'N/A',
                 precio_unitario: item?.precio || 0,
@@ -158,8 +173,6 @@ const createOrder = async (req, res) => {
             }, { transaction: t });
 
             if (size) {
-                const prodId = item?.id_producto || item?.id;
-                const producto = await Producto.findByPk(prodId, { transaction: t, lock: Transaction.LOCK.UPDATE });
                 let tallasObj = producto.tallas || {};
                 if (typeof tallasObj === 'string') {
                     try { tallasObj = JSON.parse(tallasObj); } catch (e) { tallasObj = {}; }
@@ -191,10 +204,10 @@ const createOrder = async (req, res) => {
 
         await t.commit();
 
-        try {
-            await Carrito.destroy({ where: { usuario_id } });
-        } catch (cartError) {
-            console.error('Error al limpiar carrito:', cartError);
+        // Pasarela: conservar carrito hasta pago confirmado (webhook/sync).
+        // Contra entrega: vaciar al crear el pedido.
+        if (!isPasarela) {
+            await clearUserCart(usuario_id);
         }
 
         const cliente = await Usuario.findByPk(usuario_id);
@@ -374,14 +387,21 @@ const cancelOrder = async (req, res) => {
         const usuario_id = req.usuarioId;
         const { motivo } = req.body;
 
+        const where = { usuario_id };
+        if (/^\d+$/.test(String(id))) {
+            where.id_solicitud = id;
+        } else {
+            where.numero_pedido = id;
+        }
+
         const order = await Solicitud.findOne({
-            where: { id_solicitud: id, usuario_id },
+            where,
             include: [{ model: DetalleSolicitud, as: 'detalles' }]
         });
 
         if (!order) {
             await t.rollback();
-            return res.status(404).json({ message: 'Pedido no encontrado o no tienes permiso' });
+            return res.status(404).json({ message: 'Pedido no encontrado o no tienes permiso', code: 'ORDER_NOT_FOUND' });
         }
 
         if (order.estado !== 'pendiente') {
@@ -399,16 +419,16 @@ const cancelOrder = async (req, res) => {
 
         await restoreOrderStock(order.detalles, t);
 
+        const isGatewayPending = isPasarelaPayment(order.metodo_pago) && order.estado_pago === 'pendiente';
+
         await order.update({
             estado: 'cancelada',
             motivo_rechazo: motivo || 'Cancelado por el cliente',
-            ...(order.metodo_pago === 'Pasarela' && order.estado_pago === 'pendiente'
-                ? { estado_pago: 'expirado' }
-                : {})
+            ...(isGatewayPending ? { estado_pago: 'expirado' } : {})
         }, { transaction: t });
 
         await t.commit();
-        res.json({ success: true, message: 'Pedido cancelado exitosamente' });
+        res.json({ success: true, message: 'Pedido cancelado exitosamente', orderId: order.numero_pedido });
     } catch (error) {
         await t.rollback();
         console.error('Cancel Order Error:', error);

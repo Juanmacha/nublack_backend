@@ -18,6 +18,7 @@ import {
 import { expireUnpaidGatewayOrders } from '../services/paymentExpiryService.js';
 import { sendOrderConfirmationEmail } from '../services/emailService.js';
 import { restoreOrderStock } from '../services/orderStockService.js';
+import { clearUserCart } from '../services/cartService.js';
 import { mapOrder } from '../utils/orderMapper.js';
 
 const router = express.Router();
@@ -206,6 +207,8 @@ const handleWompiWebhook = async (req, res) => {
             updateData.wompi_reference = transaction.reference || order.wompi_reference;
 
             await order.update(updateData);
+
+            await clearUserCart(order.usuario_id);
 
             const cliente = await Usuario.findByPk(order.usuario_id);
             if (cliente) {

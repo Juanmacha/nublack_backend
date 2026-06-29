@@ -31,7 +31,7 @@ const DetalleSolicitud = sequelize.define('DetalleSolicitud', {
         type: DataTypes.TEXT
     },
     imagen_producto: {
-        type: DataTypes.STRING(255)
+        type: DataTypes.TEXT
     },
     cantidad: {
         type: DataTypes.INTEGER,

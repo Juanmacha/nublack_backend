@@ -6,6 +6,7 @@ import {
     mapWompiStatusToPaymentStatus
 } from './wompiService.js';
 import { sendOrderConfirmationEmail } from './emailService.js';
+import { clearUserCart } from './cartService.js';
 
 /**
  * Referencia Wompi: NUBLACK-{numero_pedido}-{timestamp}
@@ -120,6 +121,8 @@ const applyApprovedPayment = async (order, transaction) => {
             console.error('[Wompi Sync] Error email confirmación:', err);
         });
     }
+
+    await clearUserCart(order.usuario_id);
 
     return { updated: true, estado_pago: 'pagado' };
 };
