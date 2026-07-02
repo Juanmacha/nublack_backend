@@ -1,6 +1,6 @@
 import express from 'express';
 import { Solicitud, DetalleSolicitud, Usuario } from '../models/index.js';
-import authMiddleware from '../middleware/authMiddleware.js';
+import optionalAuthMiddleware from '../middleware/optionalAuthMiddleware.js';
 import sequelize from '../config/database.js';
 import { wompiConfig } from '../config/wompi.js';
 import {
@@ -20,29 +20,9 @@ import { sendOrderConfirmationEmail } from '../services/emailService.js';
 import { restoreOrderStock } from '../services/orderStockService.js';
 import { clearUserCart } from '../services/cartService.js';
 import { mapOrder } from '../utils/orderMapper.js';
+import { findOrderForAccess } from '../utils/orderAccess.js';
 
 const router = express.Router();
-
-const findOrderForUser = async (orderRef, usuarioId) => {
-    const where = usuarioId
-        ? { usuario_id: usuarioId }
-        : {};
-
-    const byNumero = await Solicitud.findOne({
-        where: { ...where, numero_pedido: orderRef },
-        include: [{ model: DetalleSolicitud, as: 'detalles' }]
-    });
-    if (byNumero) return byNumero;
-
-    if (/^\d+$/.test(String(orderRef))) {
-        return Solicitud.findOne({
-            where: { ...where, id_solicitud: orderRef },
-            include: [{ model: DetalleSolicitud, as: 'detalles' }]
-        });
-    }
-
-    return null;
-};
 
 const createCheckout = async (req, res) => {
     try {
@@ -60,7 +40,9 @@ const createCheckout = async (req, res) => {
             return res.status(400).json({ message: 'orderId es requerido', code: 'MISSING_ORDER_ID' });
         }
 
-        const order = await findOrderForUser(orderId, req.usuarioId);
+        const order = await findOrderForAccess(orderId, req.usuarioId, {
+            allowPublicOrderLookup: !req.usuarioId,
+        });
         if (!order) {
             return res.status(404).json({ message: 'Pedido no encontrado', code: 'ORDER_NOT_FOUND' });
         }
@@ -142,7 +124,9 @@ const getPaymentStatus = async (req, res) => {
         await expireUnpaidGatewayOrders();
 
         const { orderId } = req.params;
-        const order = await findOrderForUser(orderId, req.usuarioId);
+        const order = await findOrderForAccess(orderId, req.usuarioId, {
+            allowPublicOrderLookup: !req.usuarioId,
+        });
         if (!order) {
             return res.status(404).json({ message: 'Pedido no encontrado', code: 'ORDER_NOT_FOUND' });
         }
@@ -208,11 +192,14 @@ const handleWompiWebhook = async (req, res) => {
 
             await order.update(updateData);
 
-            await clearUserCart(order.usuario_id);
+            if (order.usuario_id) {
+                await clearUserCart(order.usuario_id);
+            }
 
-            const cliente = await Usuario.findByPk(order.usuario_id);
-            if (cliente) {
-                sendOrderConfirmationEmail(cliente.email, order).catch((err) => {
+            const cliente = order.usuario_id ? await Usuario.findByPk(order.usuario_id) : null;
+            const emailDestino = cliente?.email || order.correo_electronico;
+            if (emailDestino) {
+                sendOrderConfirmationEmail(emailDestino, order).catch((err) => {
                     console.error('Error email confirmación pago:', err);
                 });
             }
@@ -252,7 +239,10 @@ const syncPaymentForOrder = async (req, res) => {
 
         const { orderId } = req.params;
         const asAdmin = req.usuarioRol === 'administrador';
-        const order = await findOrderForUser(orderId, asAdmin ? null : req.usuarioId);
+        const order = await findOrderForAccess(orderId, req.usuarioId, {
+            asAdmin,
+            allowPublicOrderLookup: !req.usuarioId && !asAdmin,
+        });
 
         if (!order) {
             return res.status(404).json({ message: 'Pedido no encontrado', code: 'ORDER_NOT_FOUND' });
@@ -277,9 +267,9 @@ const syncPaymentForOrder = async (req, res) => {
     }
 };
 
-router.post('/wompi/checkout', authMiddleware, createCheckout);
-router.get('/status/:orderId', authMiddleware, getPaymentStatus);
-router.post('/sync/:orderId', authMiddleware, syncPaymentForOrder);
+router.post('/wompi/checkout', optionalAuthMiddleware, createCheckout);
+router.get('/status/:orderId', optionalAuthMiddleware, getPaymentStatus);
+router.post('/sync/:orderId', optionalAuthMiddleware, syncPaymentForOrder);
 router.post('/wompi/webhook', handleWompiWebhook);
 
 export default router;

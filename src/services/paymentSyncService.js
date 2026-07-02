@@ -1,4 +1,5 @@
-import { Op } from 'sequelize';
+import { Op, Transaction } from 'sequelize';
+import sequelize from '../config/database.js';
 import { Solicitud, DetalleSolicitud, Usuario } from '../models/index.js';
 import { wompiConfig } from '../config/wompi.js';
 import {
@@ -7,6 +8,7 @@ import {
 } from './wompiService.js';
 import { sendOrderConfirmationEmail } from './emailService.js';
 import { clearUserCart } from './cartService.js';
+import { restoreOrderStock } from './orderStockService.js';
 
 /**
  * Referencia Wompi: NUBLACK-{numero_pedido}-{timestamp}
@@ -115,14 +117,17 @@ const applyApprovedPayment = async (order, transaction) => {
         wompi_reference: transaction.reference || order.wompi_reference
     });
 
-    const cliente = await Usuario.findByPk(order.usuario_id);
-    if (cliente) {
-        sendOrderConfirmationEmail(cliente.email, order).catch((err) => {
+    if (order.usuario_id) {
+        await clearUserCart(order.usuario_id);
+    }
+
+    const cliente = order.usuario_id ? await Usuario.findByPk(order.usuario_id) : null;
+    const emailDestino = cliente?.email || order.correo_electronico;
+    if (emailDestino) {
+        sendOrderConfirmationEmail(emailDestino, order).catch((err) => {
             console.error('[Wompi Sync] Error email confirmación:', err);
         });
     }
-
-    await clearUserCart(order.usuario_id);
 
     return { updated: true, estado_pago: 'pagado' };
 };
@@ -162,14 +167,34 @@ export const syncOrderPaymentFromWompi = async (order) => {
         }
 
         if (mapped === 'fallido' && order.estado_pago === 'pendiente') {
-            await order.update({
-                estado_pago: 'fallido',
-                wompi_transaction_id: transaction.id,
-                wompi_payment_method_type: transaction.payment_method_type || null,
-                wompi_reference: transaction.reference || order.wompi_reference
-            });
-            await order.reload();
-            return { synced: true, updated: true, estado_pago: 'fallido', wompi_status: transaction.status };
+            const t = await sequelize.transaction();
+            try {
+                const fullOrder = await Solicitud.findByPk(order.id_solicitud, {
+                    include: [{ model: DetalleSolicitud, as: 'detalles' }],
+                    transaction: t,
+                    lock: Transaction.LOCK.UPDATE
+                });
+
+                if (fullOrder && fullOrder.estado !== 'cancelada') {
+                    await restoreOrderStock(fullOrder.detalles, t);
+                }
+
+                await fullOrder.update({
+                    estado_pago: 'fallido',
+                    estado: 'cancelada',
+                    motivo_rechazo: 'Pago rechazado por la pasarela',
+                    wompi_transaction_id: transaction.id,
+                    wompi_payment_method_type: transaction.payment_method_type || null,
+                    wompi_reference: transaction.reference || order.wompi_reference
+                }, { transaction: t });
+
+                await t.commit();
+                await fullOrder.reload();
+                return { synced: true, updated: true, estado_pago: 'fallido', wompi_status: transaction.status };
+            } catch (err) {
+                await t.rollback();
+                throw err;
+            }
         }
     }
 

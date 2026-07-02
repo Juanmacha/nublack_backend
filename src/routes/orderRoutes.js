@@ -1,6 +1,7 @@
 import express from 'express';
 import { Solicitud, DetalleSolicitud, Producto, Usuario } from '../models/index.js';
 import authMiddleware from '../middleware/authMiddleware.js';
+import optionalAuthMiddleware from '../middleware/optionalAuthMiddleware.js';
 import isAdmin from '../middleware/isAdmin.js';
 import sequelize from '../config/database.js';
 import { Transaction } from 'sequelize';
@@ -19,8 +20,11 @@ import { wompiConfig } from '../config/wompi.js';
 import { buildCheckoutConfig, buildWompiReference } from '../services/wompiService.js';
 import { restoreOrderStock } from '../services/orderStockService.js';
 import { clearUserCart } from '../services/cartService.js';
+import { getAvailableStock, decrementProductStock } from '../utils/stockUtils.js';
+import { resolveCheckoutCustomer } from '../services/checkoutCustomerService.js';
 import { expireUnpaidGatewayOrders } from '../services/paymentExpiryService.js';
-import { syncPendingGatewayPayments } from '../services/paymentSyncService.js';
+import { resolveOrderShipping } from '../utils/shippingService.js';
+import { Op } from 'sequelize';
 
 const resolveProductImage = (producto) => {
     if (!producto) return '';
@@ -41,7 +45,9 @@ const createOrder = async (req, res) => {
     const t = await sequelize.transaction();
     let idempotencyKey = null;
     try {
-        const usuario_id = req.usuarioId;
+        const usuario_id = req.usuarioId || null;
+        let accountCreated = false;
+        let linkedExistingAccount = false;
         const {
             items = [],
             personalInfo = {},
@@ -49,6 +55,31 @@ const createOrder = async (req, res) => {
             paymentInfo = {},
             totals = {}
         } = req.body;
+
+        const customerEmail = (personalInfo.email || '').trim().toLowerCase();
+        if (!usuario_id && !customerEmail) {
+            await t.rollback();
+            return res.status(400).json({
+                message: 'El correo electrónico es obligatorio para completar la compra.',
+                code: 'EMAIL_REQUIRED'
+            });
+        }
+
+        let resolvedUserId = usuario_id;
+        if (!resolvedUserId) {
+            try {
+                const customer = await resolveCheckoutCustomer(personalInfo, t);
+                resolvedUserId = customer.usuario_id;
+                accountCreated = customer.created;
+                linkedExistingAccount = customer.existing;
+            } catch (customerErr) {
+                await t.rollback();
+                return res.status(400).json({
+                    message: customerErr.message || 'Datos del cliente incompletos',
+                    code: customerErr.code || 'INVALID_CUSTOMER_DATA'
+                });
+            }
+        }
 
         const rawPaymentMethod = (paymentInfo.metodo || '').toString();
         if (REJECTED_PAYMENT_METHODS.includes(rawPaymentMethod)) {
@@ -61,7 +92,10 @@ const createOrder = async (req, res) => {
 
         idempotencyKey = req.headers['idempotency-key'] || req.headers['idempotency_key'] || req.body.idempotencyKey || null;
         if (idempotencyKey) {
-            const existing = await Solicitud.findOne({ where: { idempotency_key: idempotencyKey, usuario_id } });
+            const idempotencyWhere = { idempotency_key: idempotencyKey };
+            if (usuario_id) idempotencyWhere.usuario_id = usuario_id;
+            else if (resolvedUserId) idempotencyWhere.usuario_id = resolvedUserId;
+            const existing = await Solicitud.findOne({ where: idempotencyWhere });
             if (existing) {
                 await t.rollback();
                 return res.status(200).json({
@@ -89,24 +123,38 @@ const createOrder = async (req, res) => {
             ? new Date(Date.now() + wompiConfig.paymentExpiryMinutes * 60 * 1000)
             : null;
 
+        let shippingTotals;
+        try {
+            shippingTotals = resolveOrderShipping(deliveryInfo, totals);
+        } catch (shippingErr) {
+            await t.rollback();
+            return res.status(400).json({
+                message: shippingErr.message,
+                code: shippingErr.code || 'INVALID_SHIPPING',
+            });
+        }
+
         const solicitud = await Solicitud.create({
             numero_pedido,
-            usuario_id,
+            usuario_id: resolvedUserId,
             nombre_cliente: personalInfo.nombre || 'Cliente',
             documento_identificacion: personalInfo.documento || '0000',
             telefono_contacto: personalInfo.telefono || '0000',
             correo_electronico: personalInfo.email,
             direccion_envio: deliveryInfo.direccion || 'No especificada',
+            departamento: deliveryInfo.departamento || null,
+            ciudad: deliveryInfo.ciudad || null,
             referencia_direccion: deliveryInfo.referencia,
             indicaciones_adicionales: deliveryInfo.indicaciones,
             horario_preferido: deliveryInfo.horario,
+            transportadora_envio: shippingTotals.transportadora,
             metodo_pago: metodoPagoDb,
             estado_pago: isPasarela ? 'pendiente' : 'no_aplica',
             wompi_reference: isPasarela ? `${buildWompiReference(numero_pedido)}-${Date.now()}` : null,
             pago_expira_at: pagoExpiraAt,
-            total: totals.total || 0,
-            subtotal: totals.subtotal || 0,
-            envio: totals.envio || 0,
+            total: shippingTotals.total,
+            subtotal: shippingTotals.subtotal,
+            envio: shippingTotals.envio,
             idempotency_key: idempotencyKey || null,
             estado: 'pendiente'
         }, { transaction: t });
@@ -114,50 +162,24 @@ const createOrder = async (req, res) => {
         for (const item of items) {
             const prodId = item?.id_producto || item?.id;
             const qty = parseInt(item?.cantidad || item?.quantity || 1, 10) || 1;
+            const size = item?.talla || item?.size || null;
             const producto = await Producto.findByPk(prodId, { transaction: t, lock: Transaction.LOCK.UPDATE });
             if (!producto) {
                 await t.rollback();
                 return res.status(400).json({ message: `Producto ${prodId} no encontrado`, code: 'PRODUCT_NOT_FOUND', item: { id: prodId } });
             }
 
-            let tallasObj = producto.tallas || {};
-            if (typeof tallasObj === 'string') {
-                try { tallasObj = JSON.parse(tallasObj); } catch (e) { tallasObj = {}; }
-            }
-
-            const requestedSize = item?.talla || item?.size || null;
-            if (requestedSize && tallasObj && ((Array.isArray(tallasObj) && tallasObj.length > 0) || Object.keys(tallasObj).length > 0)) {
-                let availableForSize = 0;
-                if (Array.isArray(tallasObj)) {
-                    const found = tallasObj.find(tallaItem => String(tallaItem.talla) === String(requestedSize));
-                    availableForSize = found ? parseInt(found.stock || 0, 10) : 0;
-                } else {
-                    availableForSize = parseInt(tallasObj[requestedSize] || 0, 10);
-                }
-
-                if (availableForSize < qty) {
-                    await t.rollback();
-                    return res.status(400).json({
-                        message: `Stock insuficiente para ${producto.nombre} talla ${requestedSize}. Disponible: ${availableForSize}, solicitado: ${qty}`,
-                        code: 'INSUFFICIENT_STOCK',
-                        item: { id: prodId, talla: requestedSize, available: availableForSize, requested: qty }
-                    });
-                }
-            } else if (producto.stock < qty) {
+            const available = getAvailableStock(producto, size);
+            if (available < qty) {
                 await t.rollback();
+                const sizeLabel = size && size !== 'N/A' ? ` talla ${size}` : '';
                 return res.status(400).json({
-                    message: `Stock insuficiente para ${producto.nombre}. Disponible: ${producto.stock}, solicitado: ${qty}`,
+                    message: `Stock insuficiente para ${producto.nombre}${sizeLabel}. Disponible: ${available}, solicitado: ${qty}`,
                     code: 'INSUFFICIENT_STOCK',
-                    item: { id: prodId, available: producto.stock, requested: qty }
+                    item: { id: prodId, talla: size || null, available, requested: qty }
                 });
             }
-        }
 
-        for (const item of items) {
-            const quantity = item?.cantidad || item?.quantity || 1;
-            const size = item?.talla || item?.size || null;
-            const prodId = item?.id_producto || item?.id;
-            const producto = await Producto.findByPk(prodId, { transaction: t, lock: Transaction.LOCK.UPDATE });
             const imagenProducto = resolveProductImage(producto) || item?.imagen || '';
 
             await DetalleSolicitud.create({
@@ -166,56 +188,30 @@ const createOrder = async (req, res) => {
                 nombre_producto: item?.nombre || producto?.nombre || 'Producto',
                 descripcion_producto: item?.descripcion || producto?.descripcion || '',
                 imagen_producto: imagenProducto,
-                cantidad: quantity,
+                cantidad: qty,
                 talla: size || 'N/A',
                 precio_unitario: item?.precio || 0,
-                subtotal: (item?.precio || 0) * quantity
+                subtotal: (item?.precio || 0) * qty
             }, { transaction: t });
 
-            if (size) {
-                let tallasObj = producto.tallas || {};
-                if (typeof tallasObj === 'string') {
-                    try { tallasObj = JSON.parse(tallasObj); } catch (e) { tallasObj = {}; }
-                }
-
-                if (Array.isArray(tallasObj)) {
-                    const idx = tallasObj.findIndex(tallaItem => String(tallaItem.talla) === String(size));
-                    if (idx >= 0) {
-                        const availableForSize = parseInt(tallasObj[idx].stock || 0, 10);
-                        tallasObj[idx].stock = Math.max(0, availableForSize - quantity);
-                    }
-                } else {
-                    const availableForSize = parseInt(tallasObj[size] || 0, 10);
-                    tallasObj[size] = Math.max(0, availableForSize - quantity);
-                }
-
-                await producto.update({
-                    tallas: tallasObj,
-                    stock: Math.max(0, producto.stock - quantity)
-                }, { transaction: t });
-            } else {
-                await Producto.decrement('stock', {
-                    by: quantity,
-                    where: { id_producto: item.id_producto || item.id },
-                    transaction: t
-                });
-            }
+            await decrementProductStock(producto, qty, size, t);
         }
 
         await t.commit();
 
         // Pasarela: conservar carrito hasta pago confirmado (webhook/sync).
-        // Contra entrega: vaciar al crear el pedido.
-        if (!isPasarela) {
-            await clearUserCart(usuario_id);
+        // Contra entrega: vaciar al crear el pedido (solo usuarios registrados).
+        if (!isPasarela && resolvedUserId) {
+            await clearUserCart(resolvedUserId);
         }
 
-        const cliente = await Usuario.findByPk(usuario_id);
-        if (cliente) {
+        const cliente = resolvedUserId ? await Usuario.findByPk(resolvedUserId) : null;
+        const emailDestino = cliente?.email || customerEmail;
+        if (emailDestino) {
             if (isPasarela) {
-                sendPendingPaymentEmail(cliente.email, solicitud).catch(err => console.error('Error email pago pendiente:', err));
+                sendPendingPaymentEmail(emailDestino, solicitud).catch(err => console.error('Error email pago pendiente:', err));
             } else {
-                sendOrderConfirmationEmail(cliente.email, solicitud).catch(err => console.error('Error email confirmación:', err));
+                sendOrderConfirmationEmail(emailDestino, solicitud).catch(err => console.error('Error email confirmación:', err));
             }
         }
 
@@ -225,7 +221,10 @@ const createOrder = async (req, res) => {
             orderId: solicitud.numero_pedido,
             requiresPayment: isPasarela,
             estado_pago: solicitud.estado_pago,
-            pago_expira_at: solicitud.pago_expira_at
+            pago_expira_at: solicitud.pago_expira_at,
+            accountCreated,
+            linkedExistingAccount,
+            usuario_id: resolvedUserId,
         };
 
         if (isPasarela) {
@@ -241,7 +240,11 @@ const createOrder = async (req, res) => {
         console.error('Order Creation Error:', error);
         if (idempotencyKey) {
             try {
-                const existing = await Solicitud.findOne({ where: { idempotency_key: idempotencyKey, usuario_id: req.usuarioId } });
+                const existing = await Solicitud.findOne({
+                    where: usuario_id
+                        ? { idempotency_key: idempotencyKey, usuario_id }
+                        : { idempotency_key: idempotencyKey }
+                });
                 if (existing) {
                     return res.status(200).json({ success: true, message: 'Pedido ya procesado (idempotency key).', orderId: existing.numero_pedido });
                 }
@@ -256,7 +259,6 @@ const createOrder = async (req, res) => {
 
 const getMyOrders = async (req, res) => {
     try {
-        await expireUnpaidGatewayOrders();
         const usuario_id = req.usuarioId;
         const orders = await Solicitud.findAll({
             where: { usuario_id },
@@ -267,6 +269,31 @@ const getMyOrders = async (req, res) => {
     } catch (error) {
         console.error('Get My Orders Error:', error);
         res.status(500).json({ message: 'Error al obtener mis pedidos' });
+    }
+};
+
+const getPendingPayments = async (req, res) => {
+    try {
+        const usuario_id = req.usuarioId;
+        if (!usuario_id) {
+            return res.status(401).json({ message: 'Autenticación requerida' });
+        }
+
+        const orders = await Solicitud.findAll({
+            where: {
+                usuario_id,
+                metodo_pago: 'Pasarela',
+                estado_pago: 'pendiente',
+                estado: { [Op.notIn]: ['cancelada', 'entregada'] },
+            },
+            include: [{ model: DetalleSolicitud, as: 'detalles' }],
+            order: [['created_at', 'DESC']],
+        });
+
+        res.json(orders.map(mapOrder));
+    } catch (error) {
+        console.error('Get Pending Payments Error:', error);
+        res.status(500).json({ message: 'Error al obtener pagos pendientes' });
     }
 };
 
@@ -297,11 +324,11 @@ const getOrderById = async (req, res) => {
 
 const getAllOrders = async (req, res) => {
     try {
-        await expireUnpaidGatewayOrders();
-        await syncPendingGatewayPayments(25);
+        const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
         const orders = await Solicitud.findAll({
             include: [{ model: DetalleSolicitud, as: 'detalles' }],
-            order: [['created_at', 'DESC']]
+            order: [['created_at', 'DESC']],
+            limit,
         });
         res.json(orders.map(mapOrder));
     } catch (error) {
@@ -310,6 +337,7 @@ const getAllOrders = async (req, res) => {
 };
 
 const updateOrderStatus = async (req, res) => {
+    const t = await sequelize.transaction();
     try {
         const { id } = req.params;
         const { estado, motivo_rechazo, numero_guia, nombre_empaquetadora } = req.body;
@@ -321,12 +349,14 @@ const updateOrderStatus = async (req, res) => {
             const empaquetadora = (nombre_empaquetadora || '').trim();
 
             if (guia.length < 3) {
+                await t.rollback();
                 return res.status(400).json({
                     message: 'El número de guía es obligatorio (mínimo 3 caracteres) al marcar en camino.',
                     code: 'MISSING_NUMERO_GUIA'
                 });
             }
             if (empaquetadora.length < 2) {
+                await t.rollback();
                 return res.status(400).json({
                     message: 'El nombre de la empaquetadora es obligatorio al marcar en camino.',
                     code: 'MISSING_EMPAQUETADORA'
@@ -334,16 +364,25 @@ const updateOrderStatus = async (req, res) => {
             }
         }
 
-        const order = await Solicitud.findByPk(id);
-        if (!order) return res.status(404).json({ message: 'Pedido no encontrado' });
+        const order = await Solicitud.findByPk(id, {
+            include: [{ model: DetalleSolicitud, as: 'detalles' }],
+            transaction: t,
+            lock: Transaction.LOCK.UPDATE
+        });
+        if (!order) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Pedido no encontrado' });
+        }
 
         if (order.metodo_pago === 'Pasarela' && order.estado_pago !== 'pagado' && dbEstado === 'aceptada') {
+            await t.rollback();
             return res.status(400).json({
                 message: 'No se puede aprobar un pedido con pasarela sin pago confirmado.',
                 code: 'PAYMENT_NOT_CONFIRMED'
             });
         }
 
+        const previousEstado = order.estado;
         const updateData = { estado: dbEstado, motivo_rechazo };
 
         if (estado === 'en_camino') {
@@ -352,7 +391,17 @@ const updateOrderStatus = async (req, res) => {
             updateData.fecha_despacho = new Date();
         }
 
-        await order.update(updateData);
+        if (dbEstado === 'cancelada' && previousEstado !== 'cancelada') {
+            await restoreOrderStock(order.detalles, t);
+            if (order.estado_pago === 'pendiente') {
+                updateData.estado_pago = 'expirado';
+            }
+        }
+
+        await order.update(updateData, { transaction: t });
+        await t.commit();
+
+        await order.reload();
 
         const cliente = await Usuario.findByPk(order.usuario_id);
         if (cliente) {
@@ -375,6 +424,7 @@ const updateOrderStatus = async (req, res) => {
             fecha_despacho: order.fecha_despacho
         });
     } catch (error) {
+        await t.rollback();
         console.error('Update Order Status Error:', error);
         res.status(500).json({ message: 'Error al actualizar pedido', error: error.message });
     }
@@ -436,8 +486,9 @@ const cancelOrder = async (req, res) => {
     }
 };
 
-router.post('/', authMiddleware, createOrder);
+router.post('/', optionalAuthMiddleware, createOrder);
 router.get('/my-orders', authMiddleware, getMyOrders);
+router.get('/pending-payments', authMiddleware, getPendingPayments);
 router.get('/all', authMiddleware, isAdmin, getAllOrders);
 router.get('/:id', authMiddleware, getOrderById);
 router.put('/:id/status', authMiddleware, isAdmin, updateOrderStatus);

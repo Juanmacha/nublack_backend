@@ -14,7 +14,7 @@ const Solicitud = sequelize.define('Solicitud', {
     },
     usuario_id: {
         type: DataTypes.INTEGER,
-        allowNull: false,
+        allowNull: true,
         references: {
             model: 'usuarios',
             key: 'id_usuario'
@@ -38,6 +38,8 @@ const Solicitud = sequelize.define('Solicitud', {
     correo_electronico: { type: DataTypes.STRING(100) },
     // Información de Entrega
     direccion_envio: { type: DataTypes.STRING(255), allowNull: false },
+    departamento: { type: DataTypes.STRING(100), allowNull: true },
+    ciudad: { type: DataTypes.STRING(100), allowNull: true },
     referencia_direccion: { type: DataTypes.STRING(255) },
     indicaciones_adicionales: { type: DataTypes.TEXT },
     horario_preferido: { type: DataTypes.STRING(100) },
@@ -62,6 +64,7 @@ const Solicitud = sequelize.define('Solicitud', {
     tiempo_estimado_entrega: { type: DataTypes.STRING(100) },
     numero_guia: { type: DataTypes.STRING(100) },
     nombre_empaquetadora: { type: DataTypes.STRING(150) },
+    transportadora_envio: { type: DataTypes.STRING(150), allowNull: true },
     fecha_despacho: { type: DataTypes.DATE },
     prioridad: {
         type: DataTypes.ENUM('baja', 'normal', 'alta', 'urgente'),

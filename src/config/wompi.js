@@ -6,16 +6,20 @@ const WOMPI_BASE_URLS = {
 const env = (process.env.WOMPI_ENV || 'sandbox').toLowerCase();
 const isProduction = env === 'production';
 
+const DEFAULT_FRONTEND = (process.env.FRONTEND_URL || 'https://nublack12.com').trim().replace(/\/$/, '');
+
 /** Wompi sandbox devuelve 403 si redirect-url es localhost. */
 export const resolveRedirectUrl = () => {
-    const configured = (process.env.WOMPI_REDIRECT_URL || 'http://localhost:5173/pago/resultado').trim();
-    if (!configured) return undefined;
+    const configured = (process.env.WOMPI_REDIRECT_URL || '').trim();
+    const storeRedirect = configured || `${DEFAULT_FRONTEND}/pago/resultado`;
 
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(configured);
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(storeRedirect);
     if (!isProduction && isLocalhost) {
-        return (process.env.WOMPI_SANDBOX_REDIRECT_URL || 'https://transaction-redirect.wompi.co/check').trim();
+        const sandboxOverride = (process.env.WOMPI_SANDBOX_REDIRECT_URL || '').trim();
+        // URL HTTPS del comercio → Wompi muestra "Volver al comercio" tras pagar.
+        return sandboxOverride || `${DEFAULT_FRONTEND}/pago/resultado`;
     }
-    return configured;
+    return storeRedirect;
 };
 
 export const wompiConfig = {

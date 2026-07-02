@@ -80,13 +80,22 @@ const Usuario = sequelize.define('Usuario', {
     tableName: 'usuarios',
     timestamps: false,
     hooks: {
-        beforeSave: async (usuario) => {
-            if (usuario.password) {
+        beforeCreate: async (usuario) => {
+            const plain = usuario.getDataValue('password');
+            if (plain) {
                 const salt = await bcrypt.genSalt(10);
-                usuario.password_hash = await bcrypt.hash(usuario.password, salt);
-                usuario.password_salt = salt; // Keep for DB compatibility
+                usuario.password_hash = await bcrypt.hash(plain, salt);
+                usuario.password_salt = salt;
             }
-        }
+        },
+        beforeUpdate: async (usuario) => {
+            const plain = usuario.getDataValue('password');
+            if (plain) {
+                const salt = await bcrypt.genSalt(10);
+                usuario.password_hash = await bcrypt.hash(plain, salt);
+                usuario.password_salt = salt;
+            }
+        },
     }
 });
 

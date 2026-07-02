@@ -42,6 +42,29 @@ export const sendWelcomeEmail = async (userEmail, userName) => {
 };
 
 /**
+ * Cuenta creada automáticamente al comprar sin login.
+ */
+export const sendCheckoutAccountEmail = async (userEmail, userName) => {
+    const storeUrl = process.env.FRONTEND_URL || 'https://nublack12.com';
+    const mailOptions = {
+        from: process.env.EMAIL_FROM,
+        to: userEmail,
+        subject: 'Tu cuenta NUBLACK — pedido registrado',
+        html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 20px;">
+                <h1 style="color: #000; text-align: center;">Hola ${userName}</h1>
+                <p>Registramos tu pedido y creamos una cuenta en <strong>NUBLACK</strong> con este correo.</p>
+                <p>Para ver tus pedidos y gestionar tu perfil, inicia sesión y usa <strong>Recuperar contraseña</strong> para crear tu clave.</p>
+                <div style="text-align: center; margin-top: 30px;">
+                    <a href="${storeUrl}/login" style="background-color: #000; color: #fff; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Iniciar sesión</a>
+                </div>
+            </div>
+        `
+    };
+    return transporter.sendMail(mailOptions);
+};
+
+/**
  * Send New Product Notification (Mass Email)
  */
 export const sendNewProductNotification = async (emails, product) => {

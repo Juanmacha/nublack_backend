@@ -110,6 +110,22 @@ export const formatWompiExpirationTime = (date) => {
     return d.toISOString();
 };
 
+/** URL de retorno al comercio (botón "Volver al comercio" en el recibo de Wompi). */
+export const buildOrderRedirectUrl = (order) => {
+    const base = wompiConfig.redirectUrl;
+    if (!base || !order?.numero_pedido) return base;
+
+    try {
+        const url = new URL(base);
+        url.searchParams.set('orderId', String(order.numero_pedido));
+        url.searchParams.set('fromWompi', '1');
+        return url.toString();
+    } catch {
+        const separator = base.includes('?') ? '&' : '?';
+        return `${base}${separator}orderId=${encodeURIComponent(order.numero_pedido)}`;
+    }
+};
+
 export const buildCheckoutUrl = (checkout) => {
     const params = new URLSearchParams({
         'public-key': checkout.publicKey,
@@ -141,7 +157,7 @@ export const buildCheckoutConfig = (order) => {
         reference,
         integritySignature,
         signature: { integrity: integritySignature },
-        redirectUrl: wompiConfig.redirectUrl,
+        redirectUrl: buildOrderRedirectUrl(order),
         customerEmail: order.correo_electronico || undefined
     };
 

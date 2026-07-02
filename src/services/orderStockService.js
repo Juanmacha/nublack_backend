@@ -1,11 +1,12 @@
-import { Producto } from '../models/index.js';
+import { incrementProductStock } from '../utils/stockUtils.js';
 
 export const restoreOrderStock = async (detalles, transaction) => {
     for (const item of (detalles || [])) {
-        await Producto.increment('stock', {
-            by: item.cantidad,
-            where: { id_producto: item.producto_id },
+        await incrementProductStock(
+            item.producto_id,
+            item.cantidad,
+            item.talla,
             transaction
-        });
+        );
     }
 };
