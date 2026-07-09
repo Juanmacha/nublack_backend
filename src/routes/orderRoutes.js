@@ -32,7 +32,7 @@ import { Op } from 'sequelize';
 import {
     computeServerOrderSubtotal,
     resolveProductUnitPrice,
-} from '../utils/wompiTestProduct.js';
+} from '../utils/orderPricing.js';
 
 const resolveProductImage = (producto) => {
     if (!producto) return '';
@@ -171,21 +171,11 @@ const createOrder = async (req, res) => {
             const productosForShipping = productIds.length
                 ? await Producto.findAll({ where: { id_producto: productIds }, transaction: t })
                 : [];
-            const shippingItems = items.map((item) => {
-                const prodId = item?.id_producto || item?.id;
-                const producto = productosForShipping.find((p) => p.id_producto == prodId);
-                return {
-                    ...item,
-                    nombre: item.nombre || producto?.nombre,
-                    variantes: producto?.variantes,
-                };
-            });
             const productMap = new Map(productosForShipping.map((p) => [p.id_producto, p]));
             const serverSubtotal = computeServerOrderSubtotal(items, productMap);
             shippingTotals = resolveOrderShipping(
                 deliveryInfo,
-                { ...totals, subtotal: serverSubtotal },
-                { items: shippingItems }
+                { ...totals, subtotal: serverSubtotal }
             );
         } catch (shippingErr) {
             await t.rollback();

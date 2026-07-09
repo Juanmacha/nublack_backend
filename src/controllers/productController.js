@@ -2,8 +2,6 @@ import { Producto, Categoria, LogActividad } from '../models/index.js';
 import { Op } from 'sequelize';
 import { notifyRegisteredClientsNewProduct } from '../services/emailService.js';
 import { logActivity } from '../middleware/loggerMiddleware.js';
-import { isWompiTestProduct } from '../utils/wompiTestProduct.js';
-
 export const getAllProducts = async (req, res) => {
     try {
         const { cid, min, max, genero } = req.query;
@@ -20,7 +18,9 @@ export const getAllProducts = async (req, res) => {
             ]
         });
 
-        const publicProducts = products.filter((p) => !isWompiTestProduct(p));
+        const publicProducts = products.filter(
+            (p) => !String(p.nombre || '').trim().startsWith('[WOMPI-TEST]')
+        );
 
         res.json({
             success: true,
