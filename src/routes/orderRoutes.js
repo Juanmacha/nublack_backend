@@ -163,7 +163,20 @@ const createOrder = async (req, res) => {
 
         let shippingTotals;
         try {
-            shippingTotals = resolveOrderShipping(deliveryInfo, totals);
+            const productIds = items.map((i) => i?.id_producto || i?.id).filter(Boolean);
+            const productosForShipping = productIds.length
+                ? await Producto.findAll({ where: { id_producto: productIds }, transaction: t })
+                : [];
+            const shippingItems = items.map((item) => {
+                const prodId = item?.id_producto || item?.id;
+                const producto = productosForShipping.find((p) => p.id_producto == prodId);
+                return {
+                    ...item,
+                    nombre: item.nombre || producto?.nombre,
+                    variantes: producto?.variantes,
+                };
+            });
+            shippingTotals = resolveOrderShipping(deliveryInfo, totals, { items: shippingItems });
         } catch (shippingErr) {
             await t.rollback();
             return res.status(400).json({

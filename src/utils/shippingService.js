@@ -1,6 +1,7 @@
 /** Área metropolitana: Bello, Medellín, Itagüí, Envigado, Sabaneta, La Estrella */
-const METRO_MUNICIPALITIES = new Set([
-    'bello',
+import { orderItemsAreWompiTestOnly } from './wompiTestProduct.js';
+
+const METRO_MUNICIPALITIES = new Set([    'bello',
     'medellin',
     'medellín',
     'itagui',
@@ -78,8 +79,33 @@ export const calculateShipping = ({ subtotal = 0, ciudad, transportadora } = {})
     };
 };
 
-export const resolveOrderShipping = (deliveryInfo = {}, totals = {}) => {
+/** Envío gratis para pedidos que solo contienen el producto test Wompi. */
+export const WOMPI_TEST_SHIPPING = {
+    envio: 0,
+    tipo: 'wompi_test',
+    transportadora: 'Test Wompi (sin envío)',
+    requiresCarrier: false,
+};
+
+export const resolveOrderShipping = (deliveryInfo = {}, totals = {}, { items = [] } = {}) => {
     const subtotal = parseFloat(totals.subtotal) || 0;
+
+    if (orderItemsAreWompiTestOnly(items)) {
+        const clientEnvio = parseFloat(totals.envio);
+        if (Number.isFinite(clientEnvio) && clientEnvio !== 0) {
+            const err = new Error('El producto test Wompi no tiene costo de envío.');
+            err.code = 'SHIPPING_MISMATCH';
+            throw err;
+        }
+        return {
+            envio: 0,
+            subtotal,
+            total: subtotal,
+            tipoEnvio: WOMPI_TEST_SHIPPING.tipo,
+            transportadora: WOMPI_TEST_SHIPPING.transportadora,
+        };
+    }
+
     const shipping = calculateShipping({
         subtotal,
         ciudad: deliveryInfo.ciudad,

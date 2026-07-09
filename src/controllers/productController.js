@@ -2,6 +2,7 @@ import { Producto, Categoria, LogActividad } from '../models/index.js';
 import { Op } from 'sequelize';
 import { notifyRegisteredClientsNewProduct } from '../services/emailService.js';
 import { logActivity } from '../middleware/loggerMiddleware.js';
+import { isWompiTestProduct } from '../utils/wompiTestProduct.js';
 
 export const getAllProducts = async (req, res) => {
     try {
@@ -19,10 +20,12 @@ export const getAllProducts = async (req, res) => {
             ]
         });
 
+        const publicProducts = products.filter((p) => !isWompiTestProduct(p));
+
         res.json({
             success: true,
             data: {
-                productos: products
+                productos: publicProducts
             }
         });
 
@@ -98,9 +101,11 @@ export const createProduct = async (req, res) => {
             data: newProduct
         });
 
-        notifyRegisteredClientsNewProduct(newProduct).catch((err) =>
-            console.error('[Email] Error notificación novedad producto:', err.message)
-        );
+        if (!isWompiTestProduct(newProduct)) {
+            notifyRegisteredClientsNewProduct(newProduct).catch((err) =>
+                console.error('[Email] Error notificación novedad producto:', err.message)
+            );
+        }
     } catch (error) {
         console.error('Create Product Error:', error);
         res.status(500).json({ message: 'Error al crear producto', error: error.message });

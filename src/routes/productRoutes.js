@@ -7,12 +7,18 @@ import {
     deleteProduct,
     uploadImage
 } from '../controllers/productController.js';
+import {
+    getWompiTestProduct,
+    ensureWompiTestProduct,
+} from '../controllers/wompiTestProductController.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 import isAdmin from '../middleware/isAdmin.js';
 import upload from '../middleware/uploadMiddleware.js';
 
 const router = express.Router();
 
+router.get('/wompi-test', getWompiTestProduct);
+router.post('/wompi-test/ensure', authMiddleware, isAdmin, ensureWompiTestProduct);
 router.get('/', getAllProducts);
 router.get('/:id', getProductById);
 router.post('/', authMiddleware, isAdmin, createProduct);
