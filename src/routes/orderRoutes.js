@@ -25,6 +25,8 @@ import { getAvailableStock, decrementProductStock } from '../utils/stockUtils.js
 import { resolveCheckoutCustomer } from '../services/checkoutCustomerService.js';
 import { isMetroArea } from '../utils/shippingService.js';
 import { expireUnpaidGatewayOrders } from '../services/paymentExpiryService.js';
+import { syncPendingGatewayPayments, syncUserPendingGatewayPayments, syncOrderPaymentFromWompi } from '../services/paymentSyncService.js';
+import { findOrderForAccess } from '../utils/orderAccess.js';
 import { resolveOrderShipping } from '../utils/shippingService.js';
 import { Op } from 'sequelize';
 
@@ -118,6 +120,40 @@ const createOrder = async (req, res) => {
                 message: 'Pasarela de pago no configurada temporalmente.',
                 code: 'WOMPI_NOT_CONFIGURED'
             });
+        }
+
+        if (isPasarela) {
+            await syncUserPendingGatewayPayments({
+                usuarioId: resolvedUserId,
+                email: customerEmail || personalInfo.email,
+                limit: 5
+            });
+
+            const orConditions = [];
+            if (resolvedUserId) orConditions.push({ usuario_id: resolvedUserId });
+            if (customerEmail) orConditions.push({ correo_electronico: customerEmail });
+
+            if (orConditions.length) {
+                const existingPending = await Solicitud.findOne({
+                    where: {
+                        metodo_pago: 'Pasarela',
+                        estado_pago: 'pendiente',
+                        estado: 'pendiente',
+                        [Op.or]: orConditions
+                    },
+                    order: [['created_at', 'DESC']]
+                });
+
+                if (existingPending) {
+                    await t.rollback();
+                    return res.status(409).json({
+                        message: 'Ya tienes un pago pendiente. Complétalo antes de crear otro pedido con pasarela.',
+                        code: 'PENDING_PAYMENT_EXISTS',
+                        orderId: existingPending.numero_pedido,
+                        pago_expira_at: existingPending.pago_expira_at
+                    });
+                }
+            }
         }
 
         const numero_pedido = 'ORD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
@@ -263,8 +299,16 @@ const createOrder = async (req, res) => {
 const getMyOrders = async (req, res) => {
     try {
         const usuario_id = req.usuarioId;
+        const user = await Usuario.findByPk(usuario_id, { attributes: ['email'] });
+        const userEmail = user?.email || null;
+
+        await syncUserPendingGatewayPayments({ usuarioId: usuario_id, email: userEmail, limit: 15 });
+
+        const orConditions = [{ usuario_id }];
+        if (userEmail) orConditions.push({ correo_electronico: userEmail });
+
         const orders = await Solicitud.findAll({
-            where: { usuario_id },
+            where: { [Op.or]: orConditions },
             include: [{ model: DetalleSolicitud, as: 'detalles' }],
             order: [['created_at', 'DESC']]
         });
@@ -282,9 +326,15 @@ const getPendingPayments = async (req, res) => {
             return res.status(401).json({ message: 'Autenticación requerida' });
         }
 
+        const user = await Usuario.findByPk(usuario_id, { attributes: ['email'] });
+        await syncUserPendingGatewayPayments({ usuarioId: usuario_id, email: user?.email, limit: 10 });
+
+        const orConditions = [{ usuario_id }];
+        if (user?.email) orConditions.push({ correo_electronico: user.email });
+
         const orders = await Solicitud.findAll({
             where: {
-                usuario_id,
+                [Op.or]: orConditions,
                 metodo_pago: 'Pasarela',
                 estado_pago: 'pendiente',
                 estado: { [Op.notIn]: ['cancelada', 'entregada'] },
@@ -302,21 +352,21 @@ const getPendingPayments = async (req, res) => {
 
 const getOrderById = async (req, res) => {
     try {
-        await expireUnpaidGatewayOrders();
         const { id } = req.params;
         const usuario_id = req.usuarioId;
 
-        const order = await Solicitud.findOne({
-            where: {
-                usuario_id,
-                ...( /^\d+$/.test(id) ? { id_solicitud: id } : { numero_pedido: id })
-            },
-            include: [{ model: DetalleSolicitud, as: 'detalles' }]
-        });
-
+        const order = await findOrderForAccess(id, usuario_id);
         if (!order) {
             return res.status(404).json({ message: 'Pedido no encontrado', code: 'ORDER_NOT_FOUND' });
         }
+
+        if (order.metodo_pago === 'Pasarela' && order.estado_pago !== 'pagado') {
+            await syncOrderPaymentFromWompi(order);
+            await order.reload();
+        }
+
+        await expireUnpaidGatewayOrders();
+        await order.reload();
 
         res.json(mapOrder(order));
     } catch (error) {
@@ -327,6 +377,8 @@ const getOrderById = async (req, res) => {
 
 const getAllOrders = async (req, res) => {
     try {
+        await syncPendingGatewayPayments(30);
+
         const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
         const orders = await Solicitud.findAll({
             include: [{ model: DetalleSolicitud, as: 'detalles' }],

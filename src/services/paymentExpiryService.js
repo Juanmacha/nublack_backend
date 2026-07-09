@@ -2,6 +2,7 @@ import { Op } from 'sequelize';
 import sequelize from '../config/database.js';
 import { Solicitud, DetalleSolicitud } from '../models/index.js';
 import { restoreOrderStock } from './orderStockService.js';
+import { syncOrderPaymentFromWompi } from './paymentSyncService.js';
 
 const EXPIRY_MOTIVO = 'Pago no completado en el tiempo límite (40 minutos)';
 
@@ -21,6 +22,24 @@ export const expireUnpaidGatewayOrders = async () => {
 
     let count = 0;
     for (const order of expiredOrders) {
+        try {
+            const syncResult = await syncOrderPaymentFromWompi(order);
+            await order.reload();
+
+            if (order.estado_pago === 'pagado') {
+                console.log(`[PaymentExpiry] Pedido ${order.numero_pedido} pagado en Wompi — no se expira.`);
+                continue;
+            }
+
+            if (syncResult.reason === 'wompi_not_configured') {
+                console.warn(`[PaymentExpiry] Wompi no configurado — pedido ${order.numero_pedido} no expirado hasta confirmar sync.`);
+                continue;
+            }
+        } catch (err) {
+            console.error(`[PaymentExpiry] Error sync antes de expirar ${order.numero_pedido}:`, err.message);
+            continue;
+        }
+
         const t = await sequelize.transaction();
         try {
             await restoreOrderStock(order.detalles, t);

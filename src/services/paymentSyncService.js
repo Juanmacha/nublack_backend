@@ -8,7 +8,7 @@ import {
 } from './wompiService.js';
 import { notifyPaymentConfirmed } from './emailService.js';
 import { clearUserCart } from './cartService.js';
-import { restoreOrderStock } from './orderStockService.js';
+import { restoreOrderStock, reserveOrderStock } from './orderStockService.js';
 
 /**
  * Referencia Wompi: NUBLACK-{numero_pedido}-{timestamp}
@@ -71,6 +71,23 @@ export const fetchWompiTransactionByReference = async (reference) => {
     return pickBestTransaction(transactions);
 };
 
+export const fetchWompiTransactionById = async (transactionId) => {
+    if (!wompiConfig.privateKey || !transactionId) return null;
+
+    const url = `${wompiConfig.baseUrl}/transactions/${encodeURIComponent(transactionId)}`;
+    const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${wompiConfig.privateKey}` }
+    });
+
+    if (!res.ok) {
+        console.warn(`[Wompi Sync] GET transactions/${transactionId} → ${res.status}`);
+        return null;
+    }
+
+    const body = await res.json();
+    return body?.data || null;
+};
+
 const pickBestTransaction = (transactions) => (
     transactions.sort((a, b) => {
         const ta = new Date(a.finalized_at || a.created_at || 0).getTime();
@@ -109,13 +126,43 @@ const applyApprovedPayment = async (order, transaction) => {
         return { updated: false, estado_pago: 'pagado' };
     }
 
-    await order.update({
+    const wasCancelled = order.estado === 'cancelada'
+        || order.estado_pago === 'expirado';
+
+    const updateData = {
         estado_pago: 'pagado',
         fecha_pago: transaction.finalized_at ? new Date(transaction.finalized_at) : new Date(),
         wompi_transaction_id: transaction.id,
         wompi_payment_method_type: transaction.payment_method_type || null,
         wompi_reference: transaction.reference || order.wompi_reference
-    });
+    };
+
+    if (wasCancelled) {
+        updateData.estado = 'pendiente';
+        updateData.motivo_rechazo = null;
+    }
+
+    if (wasCancelled) {
+        const t = await sequelize.transaction();
+        try {
+            const fullOrder = await Solicitud.findByPk(order.id_solicitud, {
+                include: [{ model: DetalleSolicitud, as: 'detalles' }],
+                transaction: t,
+                lock: Transaction.LOCK.UPDATE
+            });
+
+            await reserveOrderStock(fullOrder?.detalles || [], t);
+            await fullOrder.update(updateData, { transaction: t });
+            await t.commit();
+            console.log(`[Wompi Sync] Pedido ${order.numero_pedido} restaurado tras pago aprobado (estaba cancelado/expirado).`);
+        } catch (err) {
+            await t.rollback();
+            console.error(`[Wompi Sync] Error reservando stock al restaurar ${order.numero_pedido}:`, err.message);
+            await order.update(updateData);
+        }
+    } else {
+        await order.update(updateData);
+    }
 
     if (order.usuario_id) {
         await clearUserCart(order.usuario_id);
@@ -132,7 +179,7 @@ const applyApprovedPayment = async (order, transaction) => {
 /**
  * Consulta Wompi y actualiza estado_pago si la transacción ya fue aprobada.
  */
-export const syncOrderPaymentFromWompi = async (order) => {
+export const syncOrderPaymentFromWompi = async (order, { transactionId = null } = {}) => {
     if (!order || order.metodo_pago !== 'Pasarela') {
         return { synced: false, reason: 'not_gateway' };
     }
@@ -143,12 +190,18 @@ export const syncOrderPaymentFromWompi = async (order) => {
         return { synced: false, reason: 'wompi_not_configured' };
     }
 
-    const referencesToTry = [order.wompi_reference].filter(Boolean);
     let transaction = null;
 
-    for (const ref of referencesToTry) {
-        transaction = await fetchWompiTransactionByReference(ref);
-        if (transaction) break;
+    if (transactionId) {
+        transaction = await fetchWompiTransactionById(transactionId);
+    }
+
+    const referencesToTry = [order.wompi_reference].filter(Boolean);
+    if (!transaction) {
+        for (const ref of referencesToTry) {
+            transaction = await fetchWompiTransactionByReference(ref);
+            if (transaction) break;
+        }
     }
 
     if (!transaction && order.numero_pedido) {
@@ -207,7 +260,8 @@ export const syncPendingGatewayPayments = async (limit = 25) => {
     const pending = await Solicitud.findAll({
         where: {
             metodo_pago: 'Pasarela',
-            estado_pago: { [Op.in]: ['pendiente', 'expirado'] }
+            estado_pago: { [Op.in]: ['pendiente', 'expirado'] },
+            estado: { [Op.in]: ['pendiente', 'cancelada'] }
         },
         order: [['updated_at', 'DESC']],
         limit
@@ -220,6 +274,39 @@ export const syncPendingGatewayPayments = async (limit = 25) => {
             if (result.synced && result.updated) updated += 1;
         } catch (err) {
             console.error(`[Wompi Sync] Error pedido ${order.numero_pedido}:`, err.message);
+        }
+    }
+
+    return { count: pending.length, updated };
+};
+
+/** Sincroniza pagos pasarela pendientes de un usuario (por id o correo). */
+export const syncUserPendingGatewayPayments = async ({ usuarioId = null, email = null, limit = 10 } = {}) => {
+    if (!wompiConfig.privateKey) return { count: 0, updated: 0 };
+
+    const orConditions = [];
+    if (usuarioId) orConditions.push({ usuario_id: usuarioId });
+    if (email) orConditions.push({ correo_electronico: email });
+    if (!orConditions.length) return { count: 0, updated: 0 };
+
+    const pending = await Solicitud.findAll({
+        where: {
+            metodo_pago: 'Pasarela',
+            estado_pago: { [Op.in]: ['pendiente', 'expirado'] },
+            estado: { [Op.in]: ['pendiente', 'cancelada'] },
+            [Op.or]: orConditions
+        },
+        order: [['updated_at', 'DESC']],
+        limit
+    });
+
+    let updated = 0;
+    for (const order of pending) {
+        try {
+            const result = await syncOrderPaymentFromWompi(order);
+            if (result.synced && result.updated) updated += 1;
+        } catch (err) {
+            console.error(`[Wompi Sync] Error pedido usuario ${order.numero_pedido}:`, err.message);
         }
     }
 

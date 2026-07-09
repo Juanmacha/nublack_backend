@@ -69,11 +69,22 @@ const createCheckout = async (req, res) => {
         }
 
         if (order.pago_expira_at && new Date(order.pago_expira_at) < new Date()) {
+            await syncOrderPaymentFromWompi(order);
+            await order.reload();
+            if (order.estado_pago === 'pagado') {
+                return res.status(400).json({
+                    message: 'Este pedido ya fue pagado',
+                    code: 'ALREADY_PAID'
+                });
+            }
             await expireUnpaidGatewayOrders();
-            return res.status(400).json({
-                message: 'El tiempo para pagar este pedido ha expirado (40 minutos)',
-                code: 'PAYMENT_EXPIRED'
-            });
+            await order.reload();
+            if (order.estado_pago === 'expirado' || order.estado === 'cancelada') {
+                return res.status(400).json({
+                    message: 'El tiempo para pagar este pedido ha expirado (40 minutos)',
+                    code: 'PAYMENT_EXPIRED'
+                });
+            }
         }
 
         // Wompi exige referencia única por intento de transacción
@@ -121,8 +132,6 @@ const createCheckout = async (req, res) => {
 
 const getPaymentStatus = async (req, res) => {
     try {
-        await expireUnpaidGatewayOrders();
-
         const { orderId } = req.params;
         const order = await findOrderForAccess(orderId, req.usuarioId, {
             allowPublicOrderLookup: !req.usuarioId,
@@ -132,9 +141,13 @@ const getPaymentStatus = async (req, res) => {
         }
 
         if (order.metodo_pago === 'Pasarela' && order.estado_pago !== 'pagado') {
-            await syncOrderPaymentFromWompi(order);
+            const wompiTxId = req.query.wompiTxId || req.query.id || null;
+            await syncOrderPaymentFromWompi(order, { transactionId: wompiTxId });
             await order.reload();
         }
+
+        await expireUnpaidGatewayOrders();
+        await order.reload();
 
         res.json({
             success: true,
@@ -190,6 +203,12 @@ const handleWompiWebhook = async (req, res) => {
             updateData.fecha_pago = new Date();
             updateData.wompi_reference = transaction.reference || order.wompi_reference;
 
+            if (order.estado === 'cancelada' || order.estado_pago === 'expirado') {
+                updateData.estado = 'pendiente';
+                updateData.motivo_rechazo = null;
+                console.log(`[Wompi Webhook] Pedido ${order.numero_pedido} restaurado tras pago aprobado.`);
+            }
+
             await order.update(updateData);
 
             if (order.usuario_id) {
@@ -232,8 +251,6 @@ const handleWompiWebhook = async (req, res) => {
 
 const syncPaymentForOrder = async (req, res) => {
     try {
-        await expireUnpaidGatewayOrders();
-
         const { orderId } = req.params;
         const asAdmin = req.usuarioRol === 'administrador';
         const order = await findOrderForAccess(orderId, req.usuarioId, {
@@ -245,7 +262,11 @@ const syncPaymentForOrder = async (req, res) => {
             return res.status(404).json({ message: 'Pedido no encontrado', code: 'ORDER_NOT_FOUND' });
         }
 
-        const syncResult = await syncOrderPaymentFromWompi(order);
+        const transactionId = req.body?.transactionId || req.body?.wompiTxId || req.query?.id || null;
+        const syncResult = await syncOrderPaymentFromWompi(order, { transactionId });
+        await order.reload();
+
+        await expireUnpaidGatewayOrders();
         await order.reload();
 
         res.json({
