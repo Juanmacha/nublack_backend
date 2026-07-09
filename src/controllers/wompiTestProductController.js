@@ -6,13 +6,14 @@ import {
     WOMPI_TEST_PRODUCT_PRICE,
     WOMPI_TEST_VARIANTES,
     isWompiTestProduct,
+    normalizeWompiTestProductRecord,
 } from '../utils/wompiTestProduct.js';
 
 const TEST_PRODUCT_PAYLOAD = {
     nombre: WOMPI_TEST_PRODUCT_NAME,
     precio: WOMPI_TEST_PRODUCT_PRICE,
     precio_original: WOMPI_TEST_PRODUCT_PRICE,
-    descripcion: 'Producto interno para probar pagos Wompi en producción. No aparece en el catálogo público. Total fijo $1.000 sin envío.',
+    descripcion: 'Producto interno para probar pagos Wompi en producción. No aparece en el catálogo público. Total fijo $2.000 sin envío.',
     estado: 'activo',
     genero: 'Unisex',
     stock: 999,
@@ -39,13 +40,15 @@ const resolveDefaultCategoryId = async () => {
 
 export const getWompiTestProduct = async (req, res) => {
     try {
-        const product = await findExistingTestProduct();
+        let product = await findExistingTestProduct();
         if (!product || !isWompiTestProduct(product)) {
             return res.status(404).json({
                 message: 'El producto test Wompi aún no fue creado. Créalo desde el panel admin.',
                 code: 'WOMPI_TEST_NOT_FOUND',
             });
         }
+
+        product = await normalizeWompiTestProductRecord(product);
 
         res.json({
             success: true,
@@ -67,6 +70,16 @@ export const ensureWompiTestProduct = async (req, res) => {
                 ...TEST_PRODUCT_PAYLOAD,
                 categoria_id: product.categoria_id || categoria_id,
             });
+            // Desactivar duplicados antiguos (p. ej. nombre con $1.000)
+            await Producto.update(
+                { estado: 'inactivo' },
+                {
+                    where: {
+                        id_producto: { [Op.ne]: product.id_producto },
+                        nombre: { [Op.like]: '[WOMPI-TEST]%' },
+                    },
+                }
+            );
         } else {
             product = await Producto.create({
                 ...TEST_PRODUCT_PAYLOAD,

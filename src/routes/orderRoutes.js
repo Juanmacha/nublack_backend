@@ -29,6 +29,10 @@ import { syncPendingGatewayPayments, syncUserPendingGatewayPayments, syncOrderPa
 import { findOrderForAccess } from '../utils/orderAccess.js';
 import { resolveOrderShipping } from '../utils/shippingService.js';
 import { Op } from 'sequelize';
+import {
+    computeServerOrderSubtotal,
+    resolveProductUnitPrice,
+} from '../utils/wompiTestProduct.js';
 
 const resolveProductImage = (producto) => {
     if (!producto) return '';
@@ -176,7 +180,13 @@ const createOrder = async (req, res) => {
                     variantes: producto?.variantes,
                 };
             });
-            shippingTotals = resolveOrderShipping(deliveryInfo, totals, { items: shippingItems });
+            const productMap = new Map(productosForShipping.map((p) => [p.id_producto, p]));
+            const serverSubtotal = computeServerOrderSubtotal(items, productMap);
+            shippingTotals = resolveOrderShipping(
+                deliveryInfo,
+                { ...totals, subtotal: serverSubtotal },
+                { items: shippingItems }
+            );
         } catch (shippingErr) {
             await t.rollback();
             return res.status(400).json({
@@ -232,6 +242,7 @@ const createOrder = async (req, res) => {
             }
 
             const imagenProducto = resolveProductImage(producto) || item?.imagen || '';
+            const unitPrice = resolveProductUnitPrice(producto, item?.precio);
 
             await DetalleSolicitud.create({
                 solicitud_id: solicitud.id_solicitud,
@@ -241,8 +252,8 @@ const createOrder = async (req, res) => {
                 imagen_producto: imagenProducto,
                 cantidad: qty,
                 talla: size || 'N/A',
-                precio_unitario: item?.precio || 0,
-                subtotal: (item?.precio || 0) * qty
+                precio_unitario: unitPrice,
+                subtotal: unitPrice * qty
             }, { transaction: t });
 
             await decrementProductStock(producto, qty, size, t);
