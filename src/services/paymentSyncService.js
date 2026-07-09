@@ -90,11 +90,41 @@ export const fetchWompiTransactionById = async (transactionId) => {
 
 const pickBestTransaction = (transactions) => (
     transactions.sort((a, b) => {
+        const statusScore = (tx) => {
+            if (tx.status === 'APPROVED') return 100;
+            if (tx.status === 'PENDING') return 40;
+            return 0;
+        };
+        const scoreDiff = statusScore(b) - statusScore(a);
+        if (scoreDiff !== 0) return scoreDiff;
+
         const ta = new Date(a.finalized_at || a.created_at || 0).getTime();
         const tb = new Date(b.finalized_at || b.created_at || 0).getTime();
         return tb - ta;
     })[0]
 );
+
+const transactionMatchesOrder = (order, transaction) => {
+    if (!order || !transaction) return false;
+
+    if (transaction.id && order.wompi_transaction_id
+        && String(transaction.id) === String(order.wompi_transaction_id)) {
+        return true;
+    }
+
+    if (transaction.reference && order.wompi_reference
+        && transaction.reference === order.wompi_reference) {
+        return true;
+    }
+
+    if (transaction.reference) {
+        const txNumero = extractNumeroPedidoFromWompiReference(transaction.reference);
+        if (txNumero && txNumero === order.numero_pedido) return true;
+        if (String(transaction.reference).includes(order.numero_pedido)) return true;
+    }
+
+    return false;
+};
 
 /** Busca transacción aprobada por prefijo NUBLACK-{numero_pedido} en movimientos recientes. */
 export const fetchWompiTransactionForOrder = async (numeroPedido) => {
@@ -187,6 +217,7 @@ export const syncOrderPaymentFromWompi = async (order, { transactionId = null } 
         return { synced: false, reason: 'already_paid', estado_pago: 'pagado' };
     }
     if (!wompiConfig.privateKey) {
+        console.warn('[Wompi Sync] WOMPI_PRIVATE_KEY no configurada — no se puede confirmar pago con API.');
         return { synced: false, reason: 'wompi_not_configured' };
     }
 
@@ -194,6 +225,10 @@ export const syncOrderPaymentFromWompi = async (order, { transactionId = null } 
 
     if (transactionId) {
         transaction = await fetchWompiTransactionById(transactionId);
+        if (transaction && !transactionMatchesOrder(order, transaction)) {
+            console.warn(`[Wompi Sync] Transacción ${transactionId} no coincide con pedido ${order.numero_pedido}`);
+            transaction = null;
+        }
     }
 
     const referencesToTry = [order.wompi_reference].filter(Boolean);
@@ -216,7 +251,17 @@ export const syncOrderPaymentFromWompi = async (order, { transactionId = null } 
             return { synced: true, ...result, wompi_status: transaction.status };
         }
 
-        if (mapped === 'fallido' && order.estado_pago === 'pendiente') {
+        if (mapped === 'pendiente') {
+            return {
+                synced: true,
+                updated: false,
+                estado_pago: order.estado_pago,
+                wompi_status: transaction.status,
+                reason: 'wompi_pending',
+            };
+        }
+
+        if (mapped === 'fallido' && ['pendiente', 'expirado'].includes(order.estado_pago)) {
             const t = await sequelize.transaction();
             try {
                 const fullOrder = await Solicitud.findByPk(order.id_solicitud, {

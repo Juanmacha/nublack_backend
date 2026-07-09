@@ -133,6 +133,8 @@ const createCheckout = async (req, res) => {
 const getPaymentStatus = async (req, res) => {
     try {
         const { orderId } = req.params;
+        const wompiTxId = req.query.wompiTxId || req.query.id || null;
+
         const order = await findOrderForAccess(orderId, req.usuarioId, {
             allowPublicOrderLookup: !req.usuarioId,
         });
@@ -140,18 +142,18 @@ const getPaymentStatus = async (req, res) => {
             return res.status(404).json({ message: 'Pedido no encontrado', code: 'ORDER_NOT_FOUND' });
         }
 
+        let syncResult = null;
         if (order.metodo_pago === 'Pasarela' && order.estado_pago !== 'pagado') {
-            const wompiTxId = req.query.wompiTxId || req.query.id || null;
-            await syncOrderPaymentFromWompi(order, { transactionId: wompiTxId });
+            syncResult = await syncOrderPaymentFromWompi(order, { transactionId: wompiTxId });
             await order.reload();
         }
 
-        await expireUnpaidGatewayOrders();
-        await order.reload();
-
+        // No expirar el pedido que el cliente está verificando post-pago Wompi.
         res.json({
             success: true,
             order: mapOrder(order),
+            sync: syncResult,
+            wompiConfigured: Boolean(wompiConfig.privateKey),
             payment: {
                 estado_pago: order.estado_pago,
                 metodo_pago: order.metodo_pago,
@@ -266,12 +268,10 @@ const syncPaymentForOrder = async (req, res) => {
         const syncResult = await syncOrderPaymentFromWompi(order, { transactionId });
         await order.reload();
 
-        await expireUnpaidGatewayOrders();
-        await order.reload();
-
         res.json({
             success: true,
             sync: syncResult,
+            wompiConfigured: Boolean(wompiConfig.privateKey),
             order: mapOrder(order),
             payment: {
                 estado_pago: order.estado_pago,
