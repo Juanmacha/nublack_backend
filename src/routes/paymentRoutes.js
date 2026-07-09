@@ -16,7 +16,7 @@ import {
     syncPendingGatewayPayments
 } from '../services/paymentSyncService.js';
 import { expireUnpaidGatewayOrders } from '../services/paymentExpiryService.js';
-import { sendOrderConfirmationEmail } from '../services/emailService.js';
+import { notifyPaymentConfirmed } from '../services/emailService.js';
 import { restoreOrderStock } from '../services/orderStockService.js';
 import { clearUserCart } from '../services/cartService.js';
 import { mapOrder } from '../utils/orderMapper.js';
@@ -197,12 +197,9 @@ const handleWompiWebhook = async (req, res) => {
             }
 
             const cliente = order.usuario_id ? await Usuario.findByPk(order.usuario_id) : null;
-            const emailDestino = cliente?.email || order.correo_electronico;
-            if (emailDestino) {
-                sendOrderConfirmationEmail(emailDestino, order).catch((err) => {
-                    console.error('Error email confirmación pago:', err);
-                });
-            }
+            notifyPaymentConfirmed(order, cliente).catch((err) => {
+                console.error('Error email confirmación pago:', err);
+            });
         } else if (newPaymentStatus === 'fallido' && order.estado_pago === 'pendiente') {
             const t = await sequelize.transaction();
             try {

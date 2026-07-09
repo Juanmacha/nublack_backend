@@ -6,9 +6,10 @@ import isAdmin from '../middleware/isAdmin.js';
 import sequelize from '../config/database.js';
 import { Transaction } from 'sequelize';
 import {
-    sendOrderStatusEmail,
     sendOrderConfirmationEmail,
-    sendPendingPaymentEmail
+    sendPendingPaymentEmail,
+    notifyOrderStatusChange,
+    notifyAdminNewOrder,
 } from '../services/emailService.js';
 import {
     mapOrder,
@@ -215,6 +216,7 @@ const createOrder = async (req, res) => {
                 sendOrderConfirmationEmail(emailDestino, solicitud).catch(err => console.error('Error email confirmación:', err));
             }
         }
+        notifyAdminNewOrder(solicitud).catch(err => console.error('Error email admin nuevo pedido:', err));
 
         const response = {
             success: true,
@@ -416,16 +418,15 @@ const updateOrderStatus = async (req, res) => {
         await order.reload();
 
         const cliente = await Usuario.findByPk(order.usuario_id);
-        if (cliente) {
-            sendOrderStatusEmail(
-                cliente.email,
-                order.numero_pedido,
-                dbEstado,
-                estado === 'en_camino'
-                    ? { numero_guia: updateData.numero_guia, nombre_empaquetadora: updateData.nombre_empaquetadora }
-                    : {}
-            ).catch(err => console.error('Error email estado pedido:', err));
-        }
+        notifyOrderStatusChange({
+            order,
+            previousStatus: previousEstado,
+            newStatus: dbEstado,
+            shippingInfo: estado === 'en_camino'
+                ? { numero_guia: updateData.numero_guia, nombre_empaquetadora: updateData.nombre_empaquetadora }
+                : {},
+            cliente,
+        }).catch(err => console.error('Error notificaciones estado pedido:', err));
 
         res.json({
             success: true,

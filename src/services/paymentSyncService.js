@@ -6,7 +6,7 @@ import {
     buildWompiReference,
     mapWompiStatusToPaymentStatus
 } from './wompiService.js';
-import { sendOrderConfirmationEmail } from './emailService.js';
+import { notifyPaymentConfirmed } from './emailService.js';
 import { clearUserCart } from './cartService.js';
 import { restoreOrderStock } from './orderStockService.js';
 
@@ -122,12 +122,9 @@ const applyApprovedPayment = async (order, transaction) => {
     }
 
     const cliente = order.usuario_id ? await Usuario.findByPk(order.usuario_id) : null;
-    const emailDestino = cliente?.email || order.correo_electronico;
-    if (emailDestino) {
-        sendOrderConfirmationEmail(emailDestino, order).catch((err) => {
-            console.error('[Wompi Sync] Error email confirmación:', err);
-        });
-    }
+    notifyPaymentConfirmed(order, cliente).catch((err) => {
+        console.error('[Wompi Sync] Error email confirmación:', err);
+    });
 
     return { updated: true, estado_pago: 'pagado' };
 };

@@ -1,6 +1,6 @@
-import { Producto, Categoria, Usuario, LogActividad } from '../models/index.js';
+import { Producto, Categoria, LogActividad } from '../models/index.js';
 import { Op } from 'sequelize';
-import { sendNewProductNotification } from '../services/emailService.js';
+import { notifyRegisteredClientsNewProduct } from '../services/emailService.js';
 import { logActivity } from '../middleware/loggerMiddleware.js';
 
 export const getAllProducts = async (req, res) => {
@@ -98,22 +98,9 @@ export const createProduct = async (req, res) => {
             data: newProduct
         });
 
-        // Notificación masiva a clientes
-        try {
-            const clientes = await Usuario.findAll({
-                where: { rol: 'cliente', estado: 'activo' },
-                attributes: ['email']
-            });
-            const emails = clientes.map(c => c.email);
-            console.log(`Preparando notificación masiva para ${emails.length} clientes`);
-            if (emails.length > 0) {
-                sendNewProductNotification(emails, newProduct)
-                    .then(() => console.log('Correos masivos enviados'))
-                    .catch(err => console.error('Error envío masivo:', err.message));
-            }
-        } catch (mailErr) {
-            console.error('Error obteniendo correos para notificación masiva:', mailErr);
-        }
+        notifyRegisteredClientsNewProduct(newProduct).catch((err) =>
+            console.error('[Email] Error notificación novedad producto:', err.message)
+        );
     } catch (error) {
         console.error('Create Product Error:', error);
         res.status(500).json({ message: 'Error al crear producto', error: error.message });
