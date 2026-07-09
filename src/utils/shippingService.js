@@ -12,7 +12,7 @@ const METRO_MUNICIPALITIES = new Set([
 ]);
 
 export const METRO_SHIPPING_COST = 15000;
-export const FREE_SHIPPING_MIN_SUBTOTAL = 299000;
+export const FREE_SHIPPING_MIN_SUBTOTAL = 299900;
 
 export const SHIPPING_CARRIERS = [
     { id: 'servientrega', name: 'Servientrega', cost: 18000 },
@@ -40,7 +40,7 @@ export const calculateShipping = ({ subtotal = 0, ciudad, transportadora } = {})
         return {
             envio: 0,
             tipo: 'gratis',
-            transportadora: 'Envío gratis (compra ≥ $299.000)',
+            transportadora: 'Envío gratis (compra ≥ $299.900)',
             requiresCarrier: false,
         };
     }

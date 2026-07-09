@@ -22,6 +22,7 @@ import { restoreOrderStock } from '../services/orderStockService.js';
 import { clearUserCart } from '../services/cartService.js';
 import { getAvailableStock, decrementProductStock } from '../utils/stockUtils.js';
 import { resolveCheckoutCustomer } from '../services/checkoutCustomerService.js';
+import { isMetroArea } from '../utils/shippingService.js';
 import { expireUnpaidGatewayOrders } from '../services/paymentExpiryService.js';
 import { resolveOrderShipping } from '../utils/shippingService.js';
 import { Op } from 'sequelize';
@@ -340,29 +341,9 @@ const updateOrderStatus = async (req, res) => {
     const t = await sequelize.transaction();
     try {
         const { id } = req.params;
-        const { estado, motivo_rechazo, numero_guia, nombre_empaquetadora } = req.body;
+        let { estado, motivo_rechazo, numero_guia, nombre_empaquetadora } = req.body;
 
         const dbEstado = statusMapFEtoBE[estado] || estado;
-
-        if (estado === 'en_camino') {
-            const guia = (numero_guia || '').trim();
-            const empaquetadora = (nombre_empaquetadora || '').trim();
-
-            if (guia.length < 3) {
-                await t.rollback();
-                return res.status(400).json({
-                    message: 'El número de guía es obligatorio (mínimo 3 caracteres) al marcar en camino.',
-                    code: 'MISSING_NUMERO_GUIA'
-                });
-            }
-            if (empaquetadora.length < 2) {
-                await t.rollback();
-                return res.status(400).json({
-                    message: 'El nombre de la empaquetadora es obligatorio al marcar en camino.',
-                    code: 'MISSING_EMPAQUETADORA'
-                });
-            }
-        }
 
         const order = await Solicitud.findByPk(id, {
             include: [{ model: DetalleSolicitud, as: 'detalles' }],
@@ -372,6 +353,37 @@ const updateOrderStatus = async (req, res) => {
         if (!order) {
             await t.rollback();
             return res.status(404).json({ message: 'Pedido no encontrado' });
+        }
+
+        if (estado === 'en_camino') {
+            const isMetroDelivery = isMetroArea(order.ciudad);
+
+            if (isMetroDelivery) {
+                numero_guia = (numero_guia || '').trim() || `LOCAL-${order.numero_pedido}`;
+                nombre_empaquetadora = (nombre_empaquetadora || '').trim()
+                    || order.transportadora_envio
+                    || 'Domicilio Nublack (Área Metropolitana)';
+            } else {
+                const guia = (numero_guia || '').trim();
+                const empaquetadora = (nombre_empaquetadora || '').trim();
+
+                if (guia.length < 3) {
+                    await t.rollback();
+                    return res.status(400).json({
+                        message: 'El número de guía es obligatorio (mínimo 3 caracteres) al marcar en camino.',
+                        code: 'MISSING_NUMERO_GUIA'
+                    });
+                }
+                if (empaquetadora.length < 2) {
+                    await t.rollback();
+                    return res.status(400).json({
+                        message: 'El nombre de la empaquetadora es obligatorio al marcar en camino.',
+                        code: 'MISSING_EMPAQUETADORA'
+                    });
+                }
+                numero_guia = guia;
+                nombre_empaquetadora = empaquetadora;
+            }
         }
 
         if (order.metodo_pago === 'Pasarela' && order.estado_pago !== 'pagado' && dbEstado === 'aceptada') {
@@ -386,8 +398,8 @@ const updateOrderStatus = async (req, res) => {
         const updateData = { estado: dbEstado, motivo_rechazo };
 
         if (estado === 'en_camino') {
-            updateData.numero_guia = numero_guia.trim();
-            updateData.nombre_empaquetadora = nombre_empaquetadora.trim();
+            updateData.numero_guia = String(numero_guia).trim();
+            updateData.nombre_empaquetadora = String(nombre_empaquetadora).trim();
             updateData.fecha_despacho = new Date();
         }
 
