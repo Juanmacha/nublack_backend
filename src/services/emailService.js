@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import { Usuario } from '../models/index.js';
+import { resolveWompiChargeAmount, isMetroPasarelaSplitOrder } from './wompiService.js';
 
 dotenv.config();
 
@@ -317,21 +318,31 @@ export const notifyAdminNewOrder = async (order) => {
     );
 };
 
-export const sendPendingPaymentEmail = async (userEmail, order) =>
-    safeSendMail({
+export const sendPendingPaymentEmail = async (userEmail, order) => {
+    const wompiAmount = resolveWompiChargeAmount(order);
+    const envioEfectivo = isMetroPasarelaSplitOrder(order) ? (parseFloat(order.envio) || 0) : 0;
+    const paymentLines = envioEfectivo > 0
+        ? `<p>Productos (Wompi): <strong>$${Number(wompiAmount).toLocaleString('es-CO')} COP</strong></p>
+            <p>Domicilio (efectivo al recibir): <strong>$${Number(envioEfectivo).toLocaleString('es-CO')} COP</strong></p>
+            <p>Total del pedido: <strong>$${Number(order.total).toLocaleString('es-CO')} COP</strong></p>`
+        : `<p>Total a pagar: <strong>$${Number(wompiAmount).toLocaleString('es-CO')} COP</strong></p>`;
+
+    return safeSendMail({
         to: userEmail,
         subject: `Completa el pago de tu pedido ${order.numero_pedido}`,
         html: emailWrapper(
             'Pedido registrado — pendiente de pago',
             `<p>Tu pedido <strong>${order.numero_pedido}</strong> fue creado correctamente.</p>
-            <p>Total a pagar: <strong>$${Number(order.total).toLocaleString('es-CO')} COP</strong></p>
-            <p>Tienes <strong>40 minutos</strong> para completar el pago por pasarela Wompi.</p>
+            ${paymentLines}
+            <p>Tienes <strong>40 minutos</strong> para completar el pago de los productos por pasarela Wompi.</p>
+            ${envioEfectivo > 0 ? '<p>El costo de domicilio lo pagarás en efectivo cuando recibas tu pedido.</p>' : ''}
             <p>Si no completas el pago a tiempo, el pedido se cancelará automáticamente.</p>
             <div style="text-align: center; margin-top: 24px;">
                 <a href="${getStoreUrl()}/carrito" style="background-color: #000; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Completar pago</a>
             </div>`
         ),
     });
+};
 
 export const sendPasswordResetEmail = async (userEmail, code) =>
     safeSendMail({

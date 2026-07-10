@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { wompiConfig } from '../config/wompi.js';
+import { isMetroArea } from '../utils/shippingService.js';
 
 const isDebug = () => process.env.WOMPI_DEBUG === 'true';
 
@@ -32,6 +33,23 @@ export const amountToCents = (amount) => {
 };
 
 export const buildWompiReference = (numeroPedido) => `NUBLACK-${numeroPedido}`;
+
+/** Pasarela en área metropolitana: Wompi cobra solo productos; el domicilio se paga en efectivo. */
+export const isMetroPasarelaSplitOrder = (order) => {
+    if (!order || order.metodo_pago !== 'Pasarela') return false;
+    if (!isMetroArea(order.ciudad)) return false;
+    const envio = parseFloat(order.envio) || 0;
+    return envio > 0;
+};
+
+export const resolveWompiChargeAmount = (order) => {
+    const total = parseFloat(order?.total) || 0;
+    const subtotal = parseFloat(order?.subtotal);
+    if (isMetroPasarelaSplitOrder(order) && Number.isFinite(subtotal) && subtotal > 0) {
+        return subtotal;
+    }
+    return total;
+};
 
 /**
  * Firma Wompi: SHA256(reference + amountInCents + currency + integritySecret)
@@ -144,7 +162,8 @@ export const buildCheckoutUrl = (checkout) => {
 
 export const buildCheckoutConfig = (order) => {
     const reference = String(order.wompi_reference || buildWompiReference(order.numero_pedido)).trim();
-    const amountInCents = amountToCents(order.total);
+    const wompiAmount = resolveWompiChargeAmount(order);
+    const amountInCents = amountToCents(wompiAmount);
     const currency = 'COP';
     // No incluir expiration-time en firma/checkout: Wompi valida distinto en POST /transactions
     // y provoca "signature: La firma es inválida". La expiración la maneja el backend (40 min).
@@ -154,6 +173,8 @@ export const buildCheckoutConfig = (order) => {
         publicKey: wompiConfig.publicKey,
         currency,
         amountInCents,
+        amountPesos: wompiAmount,
+        envioCobroEfectivo: isMetroPasarelaSplitOrder(order) ? (parseFloat(order.envio) || 0) : 0,
         reference,
         integritySignature,
         signature: { integrity: integritySignature },
